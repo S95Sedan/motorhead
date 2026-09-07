@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="120" viewBox="0 0 1280 120" role="img" aria-labelledby="title desc">
+  <title id="title">Build from source</title>
+  <desc id="desc">Orange racing typography on a dark technical grid with a sweeping circuit motif.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#101d35"/>
+      <stop offset="1" stop-color="#060a12"/>
+    </linearGradient>
+    <linearGradient id="orange" x2="0" y2="1">
+      <stop stop-color="#ffac48"/>
+      <stop offset="1" stop-color="#ff6410"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#8199be" stroke-opacity=".07"/>
+    </pattern>
+    <clipPath id="frame"><rect width="1280" height="120" rx="12"/></clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="1280" height="120" fill="url(#background)"/>
+    <rect x="720" width="560" height="120" fill="url(#grid)"/>
+    <g fill="none" transform="skewX(-15)">
+      <path d="M900 160V82Q900 28 954 28H1110Q1164 28 1164 82V160" stroke="#20324d" stroke-width="44"/>
+      <path d="M900 160V82Q900 28 954 28H1110Q1164 28 1164 82V160" stroke="#7f9dc7" stroke-opacity=".28" stroke-width="2" stroke-dasharray="12 12"/>
+      <path d="M878 160V82Q878 6 954 6H1110" stroke="#ff781c" stroke-width="3"/>
+      <path d="M1186 82V160" stroke="#93a8c7" stroke-opacity=".45" stroke-width="2"/>
+    </g>
+    <path d="M62 48H91L82 72H53Z M100 48H119L110 72H91Z M128 48H137L128 72H119Z" fill="#ff781c"/>
+    <text x="156" y="83" fill="#000" opacity=".35" font-family="Arial Black, Arial, Helvetica, sans-serif" font-size="52" font-weight="900" font-style="italic" letter-spacing="-1">BUILD FROM SOURCE</text>
+    <text x="156" y="79" fill="url(#orange)" font-family="Arial Black, Arial, Helvetica, sans-serif" font-size="52" font-weight="900" font-style="italic" letter-spacing="-1">BUILD FROM SOURCE</text>
+    <path d="M60 103H1220" stroke="#697f9c" stroke-opacity=".25"/>
+  </g>
+</svg>

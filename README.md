@@ -61,7 +61,9 @@ BiTurbo is a community add-on, shown for compatibility; the add-on pack is not i
 Available renderers depend on your Windows version and hardware. Development
 is ongoing; compatibility and performance can vary, especially on older PCs.
 
-## Build from source
+<a id="build-from-source"></a>
+
+<img src="docs/images/build-from-source.svg" alt="Build from source" width="100%">
 
 Use a **modern 64-bit Windows PC** to build. Windows XP is a game runtime
 target, not a build environment. The scripts require `curl.exe`, Windows
@@ -107,7 +109,9 @@ The game needs its installed data folders beside the executable; the build
 output alone is not a complete playable installation. Original media, the
 official update, and optional add-on packs are not distributed here.
 
-## Credits
+<a id="credits"></a>
+
+<img src="docs/images/credits.svg" alt="Credits" width="100%">
 
 - **Digital Illusions** — original Motorhead game.
 - **S95Sedan** — reconstruction project and maintenance.
@@ -116,7 +120,9 @@ official update, and optional add-on packs are not distributed here.
 This is an unofficial project, not affiliated with or endorsed by the original
 developers or publishers.
 
-## License
+<a id="license"></a>
+
+<img src="docs/images/license.svg" alt="License" width="100%">
 
 This project is **source-available for non-commercial use** under the
 [Motorhead Non-Commercial License](LICENSE).
