@@ -46,7 +46,9 @@ applied track lighting for the circuit.
 
 BiTurbo is a community add-on, shown for compatibility; the add-on pack is not included.
 
-## Features
+<a id="features"></a>
+
+<img src="docs/images/features.svg" alt="Features" width="100%">
 
 - Windows XP and newer support in a single game executable.
 - Direct3D 9, Direct3D 11, Direct3D 12, Glide, and software rendering backends.
@@ -89,7 +91,9 @@ The viewer can browse the cars and tracks in an installed game folder. To
 inspect a particular car, pass that folder and a relative CAR definition
 (for example, `Game/car20.car`). Cars sharing a mesh remain separate entries.
 
-## Installation
+<a id="installation"></a>
+
+<img src="docs/images/installation.svg" alt="Installation" width="100%">
 
 1. Run your locally built `bin/Installer.exe`.
 2. Select your original Motorhead CD-ROM or supported CUE/BIN image, and the
