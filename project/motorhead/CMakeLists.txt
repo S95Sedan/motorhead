@@ -1,0 +1,51 @@
+cmake_minimum_required(VERSION 3.28)
+
+project(Motorhead VERSION 0.1.0 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+
+add_compile_definitions(MH_WINDOWS_XP_COMPAT=1)
+
+# Pentium 4 is the supported XP-era baseline. Keep scalar floating point on
+# SSE2 instead of the substantially slower x87 path selected by 32-bit MinGW.
+if(MINGW AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+    add_compile_options(-msse2 -mfpmath=sse)
+endif()
+
+option(MH_WARNINGS_AS_ERRORS "Treat project compiler warnings as errors" ON)
+option(MH_BUILD_LEGACY_DEV_ALIASES
+       "Create development-only legacy executable aliases" OFF)
+
+include(cmake/ProjectWarnings.cmake)
+set(MH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+set(SDL_WASAPI OFF CACHE BOOL "" FORCE)
+set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
+set(SDL_SENSOR OFF CACHE BOOL "" FORCE)
+set(SDL_DIALOG OFF CACHE BOOL "" FORCE)
+set(SDL_TRAY OFF CACHE BOOL "" FORCE)
+set(SDL_GPU OFF CACHE BOOL "" FORCE)
+set(SDL_RENDER_GPU OFF CACHE BOOL "" FORCE)
+set(SDL_VULKAN OFF CACHE BOOL "" FORCE)
+set(SDL_RENDER_VULKAN OFF CACHE BOOL "" FORCE)
+set(HAVE_MMDEVICEAPI_H OFF CACHE INTERNAL "" FORCE)
+set(HAVE_ROAPI_H OFF CACHE INTERNAL "" FORCE)
+set(HAVE_SENSORSAPI_H OFF CACHE INTERNAL "" FORCE)
+set(HAVE_SHELLSCALINGAPI_H OFF CACHE INTERNAL "" FORCE)
+set(HAVE_WINDOWS_GAMING_INPUT_H OFF CACHE INTERNAL "" FORCE)
+set(HAVE_GAMEINPUT_H OFF CACHE INTERNAL "" FORCE)
+add_subdirectory(third_party/sdl third_party/sdl-build EXCLUDE_FROM_ALL)
+
+add_subdirectory(src)
+
+install(TARGETS Motorhead RUNTIME DESTINATION .)

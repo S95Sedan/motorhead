@@ -1,0 +1,4 @@
+// Original application icon recovered from the p3.1 retail executable.
+// SDL's window class consumes this group through
+// SDL_HINT_WINDOWS_INTRESOURCE_ICON, which expects resource identifier 1.
+1 ICON "../../assets/motorhead.ico"

@@ -1,0 +1,10 @@
+#pragma once
+
+#include <string_view>
+
+namespace mh::ui::generated {
+
+inline constexpr std::string_view motorhead_configuration_template =
+    R"MHCFG(@MH_MOTORHEAD_CONFIG_TEMPLATE@)MHCFG";
+
+} // namespace mh::ui::generated

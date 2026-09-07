@@ -1,52 +1,123 @@
-# Motorhead
+<p align="center">
+  <img src="docs/images/header.svg" alt="Motorhead — Reconstruction Project" width="100%">
+</p>
 
-A reconstruction of the original Motorhead for Windows, focused on preserving
-its appearance and gameplay while supporting modern systems.
+<p align="center">
+  Preserving the look and feel of Motorhead, from Windows XP to modern PCs.
+</p>
+
+<p align="center">
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#model-viewer">Model viewer</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#build-from-source">Build</a> ·
+  <a href="#installation">Install</a> ·
+  <a href="#license">License</a>
+</p>
+
+An unofficial reconstruction of the original Motorhead for Windows. The aim is
+to preserve its appearance and gameplay while improving compatibility,
+display options, and usability on newer systems.
+
+**Source-only distribution.** Build your own installer from this repository.
+No prebuilt game executables or installers are provided. Original game media
+and the official Motorhead 3.0 update are required to play.
+
+## Screenshots
+
+Captured directly from the reconstructed game using Direct3D 12.
+The gallery includes replay views and the pre-race grid.
+
+| Original cars | Optional S40 Racing content |
+| :---: | :---: |
+| [![Front view of the original cars on the Atlantika grid](docs/images/car-front.jpg)](docs/images/car-front.jpg) | [![Front three-quarter view of the Volvo S40 on the Atlantika grid](docs/images/s40-front.jpg)](docs/images/s40-front.jpg) |
+| **Atlantika** | **Redrock** |
+| [![Atlantika replay: racing beneath an overpass at dusk](docs/images/atlantika.jpg)](docs/images/atlantika.jpg) | [![Redrock replay: illuminated signs above the industrial circuit](docs/images/redrock.jpg)](docs/images/redrock.jpg) |
+
+## Model viewer
+
+Inspect assembled cars and track geometry with textures and lighting. These
+captures use the viewer's own renderer: reflection shading for the car and
+applied track lighting for the circuit.
+
+| BiTurbo add-on car | Atlantika section |
+| :---: | :---: |
+| [![BiTurbo with assembled wheels, textures, and reflection shading in the model viewer](docs/images/modelviewer-car.jpg)](docs/images/modelviewer-car.jpg) | [![Close view of Atlantika's road, buildings, and overpass with applied lighting](docs/images/modelviewer-track.jpg)](docs/images/modelviewer-track.jpg) |
+
+BiTurbo is a community add-on, shown for compatibility; the add-on pack is not included.
 
 ## Features
 
-- Windows XP and newer support
-- Multiple rendering backends
-- Widescreen and borderless window support
-- Audio output device selection
-- Optional S40 Racing content imported from original media
+- Windows XP and newer support in a single game executable.
+- Direct3D 9, Direct3D 11, Direct3D 12, Glide, and software rendering backends.
+- Widescreen, fullscreen, and borderless windowed display modes.
+- Selectable audio output devices and separate music/SFX levels.
+- Optional S40 Racing content imported from your own media.
+- Support for community add-on cars, without bundling the add-on packs.
+- A separately buildable model viewer for inspecting game content.
 
-## Building
+Available renderers depend on your Windows version and hardware. Development
+is ongoing; compatibility and performance can vary, especially on older PCs.
 
-This repository provides source code only. No prebuilt executables or
-installers are distributed.
+## Build from source
 
-Run the included build `.bat` file. It automatically downloads the required
-build tools and builds the project.
+Use a **modern 64-bit Windows PC** to build. Windows XP is a game runtime
+target, not a build environment. The scripts require `curl.exe`, Windows
+PowerShell, and `certutil.exe` to be available.
 
-An internet connection is required for the initial tool downloads.
+1. Clone this repository with Git, or download and extract its ZIP.
+2. Run `build-installer.bat` from the repository root.
+3. Find your locally built installer at `bin/Installer.exe`.
+
+From Git Bash:
+
+```bash
+git clone https://github.com/S95Sedan/motorhead.git
+cd motorhead
+./build-installer.bat
+```
+
+The batch file downloads pinned CMake, Ninja, and LLVM-MinGW tools into
+`.tools/`, checks downloaded archives against their SHA-256 hashes, and builds
+both the game and installer. An internet connection is required for the first
+tool downloads; no separate compiler installation is needed.
+
+To build the optional model viewer, run `build-modelviewer.bat`.
+Its output is `bin/Modelviewer.exe`.
+
+The viewer can browse the cars and tracks in an installed game folder. To
+inspect a particular car, pass that folder and a relative CAR definition
+(for example, `Game/car20.car`). Cars sharing a mesh remain separate entries.
 
 ## Installation
 
-After building, run your locally compiled installer and follow the instructions
-to select your game media and installation folder.
+1. Run your locally built `bin/Installer.exe`.
+2. Select your original Motorhead CD-ROM or supported CUE/BIN image, and the
+   official Motorhead 3.0 update (`mhp30.exe`). Placing the media and update
+   beside the installer makes them easier to locate.
+3. Choose an installation folder and your soundtrack options. To import S40
+   Racing content, also supply its supported disc image.
+4. Launch `Motorhead.exe` from the installed game folder.
 
-Original Motorhead game media and the official Motorhead 3.0 update are required.
-S40 Racing content is optional and requires its own disc image.
-
-## Development Status
-
-Development is ongoing. Compatibility and performance may vary by hardware.
+The game needs its installed data folders beside the executable; the build
+output alone is not a complete playable installation. Original media, the
+official update, and optional add-on packs are not distributed here.
 
 ## Credits
 
-Motorhead was originally developed by Digital Illusions.
+- **Digital Illusions** — original Motorhead game.
+- **S95Sedan** — reconstruction project and maintenance.
+- **OpenAI Codex** — AI-assisted development and documentation.
 
-This is an unofficial project and is not affiliated with the original
+This is an unofficial project, not affiliated with or endorsed by the original
 developers or publishers.
 
 ## License
 
-This project is source-available for non-commercial use only.
-See [LICENSE](LICENSE) for the full terms.
+This project is **source-available for non-commercial use** under the
+[Motorhead Non-Commercial License](LICENSE).
+See the license for the full terms and restrictions on commercial use.
 
-Commercial use, sale, and commercial redistribution of this software
-or modified versions are prohibited.
-
-Original Motorhead and S40 Racing assets, trademarks, and third-party
-components remain subject to their respective owners’ rights and licenses.
+Original Motorhead and S40 Racing assets and trademarks belong to their
+respective owners. Screenshots illustrate the game and do not relicense its
+assets. Third-party components retain their own licenses.

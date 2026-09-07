@@ -1,0 +1,16 @@
+/.tools/
+/bin/
+
+/project/installer/build/
+/project/motorhead/build/
+/tools/modelviewer/build/
+
+/*.bin
+/*.cue
+/mhp30.exe
+
+*.log
+*.obj
+*.pdb
+*.tmp
+CMakeUserPresets.json
