@@ -12,7 +12,7 @@ if errorlevel 1 goto :failed
 set "CMAKE=!TOOLS_ROOT!\cmake\bin\cmake.exe"
 
 echo [2/3] Configuring the Model Viewer...
-pushd "tools\modelviewer"
+pushd "tools\model_viewer"
 "!CMAKE!" --preset windows-release
 if errorlevel 1 (
     popd
@@ -26,6 +26,10 @@ if errorlevel 1 (
     goto :failed
 )
 popd
+
+if not exist "bin" mkdir "bin"
+copy /Y ".build\modelviewer\bin\Modelviewer.exe" "bin\Modelviewer.exe" >nul
+if errorlevel 1 goto :failed
 
 echo.
 echo Build complete:

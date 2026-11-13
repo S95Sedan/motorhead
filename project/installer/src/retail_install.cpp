@@ -1,6 +1,7 @@
 #include "retail_install.hpp"
 
 #include <windows.h>
+#include <shlobj.h>
 
 #include <cabinet.hpp>
 #include <content/formats/tbl_envelope.hpp>
@@ -33,6 +34,9 @@ constexpr int resource_default_league = 103;
 constexpr int resource_motorhead_executable = 104;
 constexpr int resource_default_configuration = 105;
 constexpr int resource_menu_dial = 106;
+constexpr int resource_linux_executable = 107;
+constexpr int resource_linux_launcher = 108;
+constexpr int resource_linux_readme = 109;
 constexpr std::uintmax_t menu_dial_size = 44937U;
 constexpr std::string_view menu_dial_sha256 =
     "ee0849f61733715e454646f0b166abef207dc02e1bf09047dc4b459092429fbd";
@@ -100,8 +104,10 @@ handling 6
 constexpr std::array<const wchar_t *, 10U> managed_content_directories{
     L"AddressBook", L"Cars",   L"Data",  L"Demos",  L"Game",
     L"League",      L"Movies", L"Music", L"Sounds", L"Tracks"};
-constexpr std::array<const wchar_t *, 2U> managed_content_files{
-    L"motor.txt", L"SMACKW32.DLL"};
+constexpr std::array<const wchar_t *, 8U> managed_content_files{
+    L"motor.txt", L"SMACKW32.DLL", L"Motorhead.exe", L"Motorhead",
+    L"Launch-Motorhead.sh", L"README-STEAMDECK.txt", L"steamdeck-runtime.json",
+    L".motorhead-platform"};
 
 struct CueMedia {
   mh::disc::CueSheet cue;
@@ -1215,9 +1221,54 @@ void validate_retail_data(const std::filesystem::path &root,
   }
 }
 
-void install_program_files(const std::filesystem::path &install_root) {
-  write_embedded_file(resource_motorhead_executable,
-                      install_root / "Motorhead.exe");
+void validate_program_resource(const InstallTarget target) {
+  const int id=target==InstallTarget::steamdeck?resource_linux_executable:resource_motorhead_executable;
+  const auto resource=FindResourceW(nullptr,MAKEINTRESOURCEW(id),RT_RCDATA);
+  if(!resource) throw std::runtime_error("The selected platform executable is missing from the installer");
+  const auto size=SizeofResource(nullptr,resource);
+  const auto *data=static_cast<const unsigned char *>(LockResource(LoadResource(nullptr,resource)));
+  if(!data || size<64) throw std::runtime_error("The embedded executable is invalid");
+  if(target==InstallTarget::steamdeck) {
+    if(data[0]!=0x7f || data[1]!='E' || data[2]!='L' || data[3]!='F' || data[4]!=2 || data[5]!=1 || data[18]!=62 || data[19]!=0)
+      throw std::runtime_error("The Steam Deck executable must be native Linux x86_64 ELF");
+  } else if(data[0]!='M' || data[1]!='Z') throw std::runtime_error("The Windows executable must be a PE program");
+}
+
+void install_program_files(const std::filesystem::path &root, const InstallTarget target) {
+  if(target==InstallTarget::windows) {
+    write_embedded_file(resource_motorhead_executable,root/"Motorhead.exe");
+  } else {
+    write_embedded_file(resource_linux_executable,root/"Motorhead");
+    write_embedded_file(resource_linux_launcher,root/"Launch-Motorhead.sh");
+    write_embedded_file(resource_linux_readme,root/"README-STEAMDECK.txt");
+  }
+  std::ofstream marker(root/".motorhead-platform",std::ios::binary|std::ios::trunc);
+  marker << (target==InstallTarget::steamdeck?"steamdeck\n":"windows\n");
+  if(!marker) throw std::runtime_error("Could not write platform marker");
+}
+
+void apply_steamdeck_defaults(const std::filesystem::path &configuration) {
+  const auto raw=read_stock_configuration(configuration);
+  std::string text(raw.begin(),raw.end());
+  while(!text.empty() && text.back()=='\x1a') text.pop_back();
+  const std::array<std::pair<std::string_view,std::string_view>,8> settings{{
+    {"Renderer","opengl"},{"ScreenDimension","1280 800"},{"AspectRatio","16:10"},
+    {"WindowMode","Borderless"},{"MenuJoystick","Off"},{"ControlName","Keyboard"},
+    {"SkipIntroMovies","On"},{"ViewDistance","100.00"}}};
+  for(const auto &[key,value]:settings) {
+    std::istringstream input(text);std::string line,output;bool replaced=false;
+    while(std::getline(input,line)) {
+      std::istringstream tokens(line);std::string existing;tokens>>existing;
+      if(_stricmp(existing.c_str(),std::string(key).c_str())==0) {
+        output+=std::string(key)+" "+std::string(value)+"\n";replaced=true;
+      } else output+=line+"\n";
+    }
+    if(!replaced) output+=std::string(key)+" "+std::string(value)+"\n";
+    text=std::move(output);
+  }
+  std::ofstream output(configuration,std::ios::binary|std::ios::trunc);
+  output.write(text.data(),static_cast<std::streamsize>(text.size()));
+  if(!output) throw std::runtime_error("Could not write Steam Deck display defaults");
 }
 
 void remove_exact_tree(const std::filesystem::path &path,
@@ -1532,6 +1583,14 @@ std::filesystem::path default_installation_directory() {
   return std::filesystem::path(L"C:\\Program Files") / "Motorhead";
 }
 
+std::filesystem::path default_output_directory(const InstallTarget target) {
+  if(target==InstallTarget::windows) return default_installation_directory();
+  std::array<wchar_t,MAX_PATH> documents{};
+  if(SUCCEEDED(SHGetFolderPathW(nullptr,CSIDL_PERSONAL,nullptr,SHGFP_TYPE_CURRENT,documents.data())))
+    return std::filesystem::path(documents.data())/"Motorhead-Steamdeck";
+  return executable_directory()/"Motorhead-Steamdeck";
+}
+
 std::vector<RetailSource> discover_motorhead_drives() {
   std::array<wchar_t, 512U> drives{};
   const auto length =
@@ -1662,7 +1721,13 @@ void perform_import(const RetailSource &retail_source,
                     const bool install_music,
                     const std::filesystem::path &s40_cue_path,
                     const bool clean_profile, const std::atomic_bool &cancel,
-                    const InstallReport &report) {
+                    const InstallReport &report, const InstallTarget target) {
+  validate_program_resource(target);
+  if(target==InstallTarget::steamdeck && !install_music) throw std::runtime_error("Portable Steam Deck output includes the local soundtrack; enable music");
+  if((target==InstallTarget::steamdeck && std::filesystem::exists(install_root/"Motorhead.exe")) ||
+     (target==InstallTarget::windows && std::filesystem::exists(install_root/"Motorhead")))
+    throw std::runtime_error("Choose a separate output folder for Windows and Steam Deck");
+  const bool had_user_configuration=std::filesystem::is_regular_file(install_root/"User/motorhead.cfg") || std::filesystem::is_regular_file(install_root/"User/Game/motorhead.cfg");
   const std::function<void(int)> progress =
       report.progress ? report.progress : [](int) {};
   const std::function<void(const std::wstring &)> status =
@@ -1769,7 +1834,7 @@ void perform_import(const RetailSource &retail_source,
     progress(98);
     announce(report, InstallPhase::install_program,
              L"Installing the Motorhead program files");
-    install_program_files(install_root);
+    install_program_files(install_root,target);
     const auto installed_game_configuration =
         install_root / "Game" / "motorhead.cfg";
     prepare_user_directory(install_root, clean_profile, true);
@@ -1785,6 +1850,11 @@ void perform_import(const RetailSource &retail_source,
       std::filesystem::rename(default_configuration, user_configuration);
     } else {
       remove_exact_file(default_configuration, install_root);
+    }
+    if(target==InstallTarget::steamdeck && (clean_profile || !had_user_configuration)) apply_steamdeck_defaults(user_configuration);
+    if(target==InstallTarget::steamdeck) {
+      remove_exact_file(install_root/"SMACKW32.DLL",install_root);
+      remove_exact_file(install_root/"Game/MakeIcon.exe",install_root/"Game");
     }
     remove_exact_file(installed_game_configuration, install_root / "Game");
     if (!std::filesystem::is_regular_file(user_configuration) ||

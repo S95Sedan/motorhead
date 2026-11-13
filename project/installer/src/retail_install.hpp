@@ -36,6 +36,7 @@ struct InstallReport {
 };
 
 enum class RetailSourceKind { physical_disc, cue_image };
+enum class InstallTarget { windows, steamdeck };
 
 struct RetailSource {
   RetailSourceKind kind = RetailSourceKind::physical_disc;
@@ -47,6 +48,7 @@ struct RetailSource {
 std::wstring widen(std::string_view value);
 std::filesystem::path executable_directory();
 std::filesystem::path default_installation_directory();
+std::filesystem::path default_output_directory(InstallTarget target);
 
 std::vector<RetailSource> discover_motorhead_drives();
 RetailSource inspect_motorhead_cue(const std::filesystem::path &cue_path);
@@ -64,6 +66,7 @@ void perform_import(const RetailSource &retail_source,
                     bool install_music,
                     const std::filesystem::path &s40_cue_path,
                     bool clean_profile,
-                    const std::atomic_bool &cancel, const InstallReport &report);
+                    const std::atomic_bool &cancel, const InstallReport &report,
+                    InstallTarget target = InstallTarget::windows);
 
 }  // namespace motorhead

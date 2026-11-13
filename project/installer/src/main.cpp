@@ -13,6 +13,8 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <stdexcept>
 #include <cwchar>
 #include <filesystem>
 #include <memory>
@@ -29,6 +31,7 @@ namespace {
 using motorhead::RetailSource;
 using motorhead::RetailSourceKind;
 using motorhead::InstallPhase;
+using motorhead::InstallTarget;
 using motorhead::install_phase_count;
 
 constexpr UINT message_status = WM_APP + 1U;
@@ -55,6 +58,8 @@ constexpr int id_browse_image = 1010;
 constexpr int id_browse_patch = 1011;
 constexpr int id_s40 = 1012;
 constexpr int id_browse_s40 = 1013;
+constexpr int id_windows = 1014;
+constexpr int id_steamdeck = 1015;
 
 constexpr UINT_PTR timer_scan = 1U;
 constexpr UINT_PTR timer_elapsed = 2U;
@@ -73,6 +78,7 @@ constexpr int field_height = 38;
 
 enum class Page {
   welcome = 0,
+  platform,
   disc,
   location,
   options,
@@ -88,8 +94,9 @@ struct StepLabel {
   const wchar_t *hint;
 };
 
-constexpr std::array<StepLabel, 6U> steps{{
+constexpr std::array<StepLabel, 7U> steps{{
     {L"Welcome", L"Introduction"},
+    {L"Version", L"Windows or Steam Deck"},
     {L"Game source", L"CD-ROM or CUE/BIN"},
     {L"Location", L"Install folder"},
     {L"Options", L"Music and player data"},
@@ -408,7 +415,18 @@ private:
         fonts_.body_strong, fonts_.caption, dpi_);
     ui::set_checked(open_folder_, true);
 
-    destination_path_ = motorhead::default_installation_directory().wstring();
+    windows_ = ui::create_check(
+        window_, id_windows, L"Windows installation",
+        L"Install Motorhead for this Windows PC.",
+        fonts_.body_strong, fonts_.caption, dpi_);
+    steamdeck_ = ui::create_check(
+        window_, id_steamdeck, L"Steam Deck portable folder",
+        L"Create the complete native Linux game with its soundtrack. Copy "
+        L"the folder to your Deck and add Launch-Motorhead.sh to Steam.",
+        fonts_.body_strong, fonts_.caption, dpi_);
+    ui::set_checked(windows_, true);
+
+    destination_path_ = motorhead::default_output_directory(target_).wstring();
     SetWindowTextW(destination_, destination_path_.c_str());
     detect_motorhead_patch();
     refresh_drives(false);
@@ -427,7 +445,7 @@ private:
     ui::set_control_dpi(next_, dpi_);
     SendMessageW(destination_, WM_SETFONT,
                  reinterpret_cast<WPARAM>(fonts_.body), FALSE);
-    for (const auto control : {music_, s40_, reset_, open_folder_}) {
+    for (const auto control : {music_, s40_, reset_, open_folder_, windows_, steamdeck_}) {
       SendMessageW(control, WM_SETFONT,
                    reinterpret_cast<WPARAM>(fonts_.body_strong), FALSE);
       SendMessageW(control, ui::message_set_description_font,
@@ -501,6 +519,10 @@ private:
     place(browse_, field_rect_.right + gap, field_top, browse_w,
           px(field_height));
 
+    place(windows_, content_rect_.left, content_rect_.top + px(92),
+          content_rect_.right - content_rect_.left, px(76));
+    place(steamdeck_, content_rect_.left, content_rect_.top + px(182),
+          content_rect_.right - content_rect_.left, px(94));
     const auto option_height = px(68);
     place(music_, content_rect_.left, content_rect_.top + px(92),
           content_rect_.right - content_rect_.left, option_height);
@@ -531,6 +553,8 @@ private:
 
   void apply_page() {
     const auto installing = page_ == Page::installing;
+    show(windows_, page_ == Page::platform);
+    show(steamdeck_, page_ == Page::platform);
     show(browse_image_, page_ == Page::disc);
     show(browse_patch_, page_ == Page::disc);
     show(destination_, page_ == Page::location);
@@ -541,18 +565,18 @@ private:
     show(reset_, page_ == Page::options);
     show(open_folder_,
          page_ == Page::finished && outcome_ == Outcome::success);
-    show(back_, page_ == Page::location || page_ == Page::options ||
+    show(back_, page_ == Page::platform || page_ == Page::location || page_ == Page::options ||
                     page_ == Page::ready || page_ == Page::disc ||
                     (page_ == Page::finished && outcome_ != Outcome::success));
     show(quit_, page_ != Page::finished);
 
     const wchar_t *next_text = L"Next";
     if (page_ == Page::ready) {
-      next_text = L"Install";
+      next_text = target_ == InstallTarget::steamdeck ? L"Create folder" : L"Install";
     } else if (page_ == Page::finished) {
       next_text = L"Finish";
     } else if (page_ == Page::installing) {
-      next_text = L"Installing";
+      next_text = target_ == InstallTarget::steamdeck ? L"Creating" : L"Installing";
     }
     SetWindowTextW(next_, next_text);
     EnableWindow(next_, next_enabled() ? TRUE : FALSE);
@@ -858,8 +882,9 @@ private:
     const auto s40_cue = install_s40_ ? s40_cue_path_
                                       : std::filesystem::path{};
     const auto clean = clean_profile_;
+    const auto target = target_;
     worker_ = std::thread(
-        [this, retail_source, patch, destination, music, s40_cue, clean] {
+        [this, retail_source, patch, destination, music, s40_cue, clean, target] {
       bool success = false;
       bool cancelled = false;
       std::wstring message;
@@ -877,9 +902,12 @@ private:
                        0);
         };
         motorhead::perform_import(retail_source, patch, destination, music,
-                                  s40_cue, clean, cancel_requested_, report);
+                                  s40_cue, clean, cancel_requested_, report, target);
         success = true;
-        message = install_s40_
+        message = target == InstallTarget::steamdeck
+                      ? L"Copy the complete folder to your Steam Deck, then "
+                        L"add Launch-Motorhead.sh as a non-Steam game."
+                      : install_s40_
                       ? L"Motorhead and the optional S40 Racing content are "
                         L"installed and ready to play."
                       : (music ? L"The game and the original CD soundtrack "
@@ -972,7 +1000,7 @@ private:
   void paint_rail(const HDC dc) const {
     const auto current = step_of(page_);
     const auto marker = px(26);
-    const auto row = px(52);
+    const auto row = px(48);
     auto y = rail_rect_.top + px(26);
     const auto x = rail_rect_.left + px(26);
     for (std::size_t index = 0U; index < steps.size(); ++index) {
@@ -1060,6 +1088,10 @@ private:
     switch (page_) {
     case Page::welcome:
       paint_welcome(dc);
+      break;
+    case Page::platform:
+      paint_heading(dc, L"Choose a version",
+                    L"Install on Windows or prepare a portable Steam Deck game.");
       break;
     case Page::disc:
       paint_disc(dc);
@@ -1205,9 +1237,10 @@ private:
   }
 
   void paint_location(const HDC dc) const {
-    paint_heading(dc, L"Install location",
-                  L"Choose where Motorhead and your user files will be "
-                  L"installed.");
+    paint_heading(dc, target_ == InstallTarget::steamdeck ? L"Portable folder" : L"Install location",
+                  target_ == InstallTarget::steamdeck
+                      ? L"Choose where to create the folder to copy to your Deck."
+                      : L"Choose where Motorhead and your user files will be installed.");
     RECT panel{content_rect_.left, content_rect_.top + px(72),
                content_rect_.right, content_rect_.top + px(232)};
     ui::fill_rounded(dc, panel, px(8), ui::colour::window,
@@ -1269,8 +1302,9 @@ private:
 
   void paint_options(const HDC dc) const {
     paint_heading(dc, L"Installation options",
-                  L"Choose the soundtrack and optional S40 Racing add-on. "
-                  L"Existing player data is preserved by default.");
+                  target_ == InstallTarget::steamdeck
+                      ? L"The soundtrack is included for portable play. Existing player data is kept."
+                      : L"Choose the soundtrack and optional S40 Racing add-on. Existing player data is kept.");
   }
 
   void paint_summary_row(const HDC dc, int &y, const std::wstring &label,
@@ -1283,19 +1317,21 @@ private:
     RECT text{name.right, y, content_rect_.right - px(18), y + px(22)};
     ui::draw_text(dc, text, value, fonts_.body_strong, value_colour,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
-    y += px(30);
+    y += px(26);
   }
 
   void paint_ready(const HDC dc) const {
-    auto y = paint_heading(dc, L"Ready to install",
-                           L"Check the summary below and start the "
-                           L"installation.");
+    auto y = paint_heading(dc, target_ == InstallTarget::steamdeck ? L"Ready to create folder" : L"Ready to install",
+                           L"Check your choices below before starting.");
     const auto *drive = selected_drive();
-    const auto rows = required_bytes() != 0U ? 7 : 6;
+    const auto rows = required_bytes() != 0U ? 8 : 7;
     RECT panel{content_rect_.left, y, content_rect_.right,
-               y + px(24) + rows * px(30)};
+               y + px(24) + rows * px(26)};
     ui::fill_rounded(dc, panel, px(8), ui::colour::card, ui::colour::border);
     int row = static_cast<int>(panel.top) + px(14);
+    paint_summary_row(dc, row, L"Version",
+                      target_ == InstallTarget::steamdeck ? L"Steam Deck (native Linux)" : L"Windows",
+                      ui::colour::text);
     paint_summary_row(dc, row, L"Game source",
                       drive != nullptr ? drive->label : L"None",
                       ui::colour::text);
@@ -1340,7 +1376,7 @@ private:
   }
 
   void paint_installing(const HDC dc) const {
-    auto y = paint_heading(dc, L"Installing Motorhead", L"");
+    auto y = paint_heading(dc, target_ == InstallTarget::steamdeck ? L"Creating portable folder" : L"Installing Motorhead", L"");
     RECT status{content_rect_.left, y, content_rect_.right, y + px(22)};
     ui::draw_text(dc, status, status_, fonts_.body, ui::colour::text,
                   DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -1412,7 +1448,7 @@ private:
     RECT title{left, content_rect_.top, content_rect_.right,
                content_rect_.top + px(34)};
     ui::draw_text(dc, title,
-                  success ? L"Installation complete"
+                  success ? (target_ == InstallTarget::steamdeck ? L"Portable folder ready" : L"Installation complete")
                           : (cancelled ? L"Installation cancelled"
                                        : L"Installation failed"),
                   fonts_.heading, ui::colour::text,
@@ -1478,6 +1514,9 @@ private:
   void advance() {
     switch (page_) {
     case Page::welcome:
+      set_page(Page::platform);
+      break;
+    case Page::platform:
       set_page(Page::disc);
       break;
     case Page::disc:
@@ -1507,8 +1546,11 @@ private:
 
   void retreat() {
     switch (page_) {
-    case Page::disc:
+    case Page::platform:
       set_page(Page::welcome);
+      break;
+    case Page::disc:
+      set_page(Page::platform);
       break;
     case Page::location:
       set_page(Page::disc);
@@ -1686,6 +1728,24 @@ private:
     return DefWindowProcW(window_, message, wparam, lparam);
   }
 
+  void select_target(const InstallTarget target) {
+    const auto previous_default = motorhead::default_output_directory(target_).wstring();
+    read_destination();
+    if (target_ == InstallTarget::windows) {
+      windows_music_ = ui::is_checked(music_);
+    }
+    target_ = target;
+    ui::set_checked(windows_, target == InstallTarget::windows);
+    ui::set_checked(steamdeck_, target == InstallTarget::steamdeck);
+    ui::set_checked(music_, target == InstallTarget::steamdeck || windows_music_);
+    EnableWindow(music_, target == InstallTarget::windows ? TRUE : FALSE);
+    if (_wcsicmp(destination_path_.c_str(), previous_default.c_str()) == 0) {
+      SetWindowTextW(destination_, motorhead::default_output_directory(target).c_str());
+      read_destination();
+    }
+    InvalidateRect(window_, &body_rect_, FALSE);
+  }
+
   LRESULT on_command(const WPARAM wparam, const LPARAM lparam) {
     const auto identifier = LOWORD(wparam);
     const auto code = HIWORD(wparam);
@@ -1704,6 +1764,12 @@ private:
       } else {
         confirm_cancel();
       }
+      return 0;
+    case id_windows:
+      select_target(InstallTarget::windows);
+      return 0;
+    case id_steamdeck:
+      select_target(InstallTarget::steamdeck);
       return 0;
     case id_browse_image:
       choose_game_media();
@@ -1791,6 +1857,8 @@ private:
   HWND browse_s40_ = nullptr;
   HWND browse_ = nullptr;
   HWND destination_ = nullptr;
+  HWND windows_ = nullptr;
+  HWND steamdeck_ = nullptr;
   HWND music_ = nullptr;
   HWND s40_ = nullptr;
   HWND reset_ = nullptr;
@@ -1805,6 +1873,8 @@ private:
   RECT field_rect_{};
   mutable std::vector<RECT> cards_;
 
+  InstallTarget target_ = InstallTarget::windows;
+  bool windows_music_ = true;
   Page page_ = Page::welcome;
   Outcome outcome_ = Outcome::none;
   std::vector<RetailSource> drives_;
@@ -1836,12 +1906,56 @@ private:
   std::atomic_bool cancel_requested_{false};
 };
 
+// Headless mode uses the same validated importer as the wizard.
+int install_from_command_line(const int count, wchar_t **arguments) {
+  try {
+    std::filesystem::path cue, patch, destination, s40;
+    auto target = InstallTarget::windows;
+    bool music = true;
+    bool reset = false;
+    for (int i = 1; i < count; ++i) {
+      const std::wstring option(arguments[i]);
+      if (option == L"--without-music") { music = false; continue; }
+      if (option == L"--reset-profile") { reset = true; continue; }
+      if (i + 1 >= count) throw std::runtime_error("Missing option value");
+      const std::wstring value(arguments[++i]);
+      if (option == L"--install-from-cue") cue = value;
+      else if (option == L"--patch") patch = value;
+      else if (option == L"--destination") destination = value;
+      else if (option == L"--s40-cue") s40 = value;
+      else if (option == L"--target") {
+        if (value == L"windows") target = InstallTarget::windows;
+        else if (value == L"steamdeck") target = InstallTarget::steamdeck;
+        else throw std::runtime_error("Target must be windows or steamdeck");
+      } else throw std::runtime_error("Unknown installation option");
+    }
+    if (cue.empty() || patch.empty() || destination.empty())
+      throw std::runtime_error("A CUE, patch and destination are required");
+    const auto source = motorhead::inspect_motorhead_cue(cue);
+    patch = motorhead::inspect_motorhead_patch(patch);
+    std::atomic_bool cancel{false};
+    motorhead::InstallReport report;
+    report.status = [](const std::wstring &text) { std::fwprintf(stdout, L"%ls\n", text.c_str()); std::fflush(stdout); };
+    motorhead::perform_import(source, patch, destination, music, s40, reset, cancel, report, target);
+    return 0;
+  } catch (const std::exception &error) {
+    std::fprintf(stderr, "%s\n", error.what());
+    return 2;
+  }
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   try {
     int argument_count = 0;
     auto **arguments = CommandLineToArgvW(GetCommandLineW(), &argument_count);
+    if (arguments != nullptr && argument_count > 1 &&
+        _wcsicmp(arguments[1], L"--install-from-cue") == 0) {
+      const auto result = install_from_command_line(argument_count, arguments);
+      LocalFree(arguments);
+      return result;
+    }
     if (arguments != nullptr && argument_count == 3 &&
         _wcsicmp(arguments[1], L"--validate-cue") == 0) {
       const std::filesystem::path cue(arguments[2]);

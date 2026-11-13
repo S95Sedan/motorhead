@@ -19,7 +19,7 @@
     {
       "name": "windows-debug",
       "inherits": "windows-base",
-      "binaryDir": "${sourceDir}/build",
+      "binaryDir": "${sourceDir}/../../.build/installer-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug"
       }
@@ -27,7 +27,7 @@
     {
       "name": "windows-release",
       "inherits": "windows-base",
-      "binaryDir": "${sourceDir}/build",
+      "binaryDir": "${sourceDir}/../../.build/installer",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }

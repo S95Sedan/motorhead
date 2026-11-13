@@ -1,0 +1,10 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bin binary
+*.iso binary
+*.cab binary
+*.pak binary
+*.png binary
+*.jpg binary
+*.wav binary
+*.bat text eol=crlf

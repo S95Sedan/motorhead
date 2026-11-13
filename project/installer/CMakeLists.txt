@@ -14,16 +14,22 @@ include(cmake/ProjectWarnings.cmake)
 # Keep the game and installer as independent projects. Building the installer
 # first updates Motorhead, then embeds that exact release executable. Each
 # nested build is incremental, so unchanged game sources do no compilation.
-set(MOTORHEAD_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motorhead")
-set(MOTORHEAD_BINARY "${MOTORHEAD_SOURCE_DIR}/build/bin/Motorhead.exe")
-
+get_filename_component(MH_SHARED_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../shared" ABSOLUTE)
+get_filename_component(MH_WORKSPACE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set(MOTORHEAD_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motorhead-windows")
+set(MOTORHEAD_LINUX_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../motorhead-linux")
+set(MOTORHEAD_BINARY "${MH_WORKSPACE_ROOT}/.build/motorhead-windows/bin/Motorhead.exe")
+set(MOTORHEAD_LINUX_BINARY "${MH_WORKSPACE_ROOT}/.build/motorhead-linux/bin/Motorhead")
 add_custom_target(MotorheadExecutable ALL
-    COMMAND "${CMAKE_COMMAND}" --preset windows-release
-    COMMAND "${CMAKE_COMMAND}" --build --preset windows-release --parallel 1
-    BYPRODUCTS "${MOTORHEAD_BINARY}"
-    WORKING_DIRECTORY "${MOTORHEAD_SOURCE_DIR}"
-    COMMENT "Updating the embedded 32-bit Motorhead executable"
-    VERBATIM)
+  COMMAND "${CMAKE_COMMAND}" --preset windows-release -S "${MOTORHEAD_SOURCE_DIR}"
+  COMMAND "${CMAKE_COMMAND}" --build "${MH_WORKSPACE_ROOT}/.build/motorhead-windows" --target Motorhead --parallel 2
+  BYPRODUCTS "${MOTORHEAD_BINARY}" VERBATIM)
+add_custom_target(MotorheadLinuxExecutable ALL
+  COMMAND "${CMAKE_COMMAND}" --preset steamdeck-cross -S "${MOTORHEAD_LINUX_SOURCE}"
+  COMMAND "${CMAKE_COMMAND}" --build "${MH_WORKSPACE_ROOT}/.build/motorhead-linux" --target Motorhead --parallel 2
+  BYPRODUCTS "${MOTORHEAD_LINUX_BINARY}" VERBATIM)
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+configure_file(src/installer.rc.in "${CMAKE_CURRENT_BINARY_DIR}/generated/installer.rc" @ONLY)
 
 set(ZLIB_SOURCES
     third_party/zlib/adler32.c
@@ -85,25 +91,26 @@ add_executable(Installer WIN32
     src/main.cpp
     src/retail_install.cpp
     third_party/cab/src/cabinet.cpp
-    ${MOTORHEAD_SOURCE_DIR}/src/core/crypto/sha256.cpp
-    ${MOTORHEAD_SOURCE_DIR}/src/disc/cue_sheet.cpp
-    ${MOTORHEAD_SOURCE_DIR}/src/disc/iso9660.cpp
-    ${MOTORHEAD_SOURCE_DIR}/src/disc/cd_audio.cpp
-    ${MOTORHEAD_SOURCE_DIR}/src/content/formats/tbl_envelope.cpp
+    ${MH_SHARED_SOURCE_DIR}/src/core/crypto/sha256.cpp
+    ${MH_SHARED_SOURCE_DIR}/src/disc/cue_sheet.cpp
+    ${MH_SHARED_SOURCE_DIR}/src/disc/iso9660.cpp
+    ${MH_SHARED_SOURCE_DIR}/src/disc/cd_audio.cpp
+    ${MH_SHARED_SOURCE_DIR}/src/content/formats/tbl_envelope.cpp
     src/ui.cpp
-    src/installer.rc)
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/installer.rc")
 # RC include dependencies are not discovered reliably by every Windows cross
 # toolchain. Rebuild the installer whenever an embedded owned asset changes.
-set_property(SOURCE src/installer.rc APPEND PROPERTY OBJECT_DEPENDS
-             "${MOTORHEAD_BINARY}"
-             "${CMAKE_CURRENT_SOURCE_DIR}/assets/motorhead.ico"
-             "${CMAKE_CURRENT_SOURCE_DIR}/assets/motorhead_banner.bmp"
-             "${CMAKE_CURRENT_SOURCE_DIR}/assets/Default.LGF"
-             "${CMAKE_CURRENT_SOURCE_DIR}/assets/motorhead.cfg"
-             "${CMAKE_CURRENT_SOURCE_DIR}/assets/MenuDial.spr"
-             "${CMAKE_CURRENT_SOURCE_DIR}/assets/installer.manifest")
-add_dependencies(Installer MotorheadExecutable)
+set_property(SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/installer.rc" APPEND PROPERTY OBJECT_DEPENDS
+  "${MOTORHEAD_BINARY}" "${MOTORHEAD_LINUX_BINARY}"
+  "${MH_SHARED_SOURCE_DIR}/assets/motorhead.ico" "${MH_SHARED_SOURCE_DIR}/assets/Default.LGF"
+  "${MH_SHARED_SOURCE_DIR}/assets/motorhead.cfg" "${MH_SHARED_SOURCE_DIR}/assets/MenuDial.spr"
+  "${MOTORHEAD_LINUX_SOURCE}/assets/Launch-Motorhead.sh"
+  "${MOTORHEAD_LINUX_SOURCE}/assets/README-STEAMDECK.txt"
+  "${CMAKE_CURRENT_SOURCE_DIR}/assets/motorhead_banner.bmp" "${CMAKE_CURRENT_SOURCE_DIR}/assets/installer.manifest")
+add_dependencies(Installer MotorheadExecutable MotorheadLinuxExecutable)
+
 target_include_directories(Installer PRIVATE
+    ${MH_SHARED_SOURCE_DIR}/include
     ${MOTORHEAD_SOURCE_DIR}/include
     third_party/cab/include)
 target_compile_definitions(Installer PRIVATE

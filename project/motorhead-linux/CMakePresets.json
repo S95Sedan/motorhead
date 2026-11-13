@@ -1,0 +1,44 @@
+{
+  "version": 8,
+  "configurePresets": [
+    {
+      "name": "linux-release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../../.build/motorhead-linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "MH_BUILD_PLATFORM_CHECKS": "OFF",
+        "SDL_WAYLAND": "OFF",
+        "SDL_X11": "ON",
+        "SDL_JACK": "OFF",
+        "SDL_PIPEWIRE": "OFF",
+        "SDL_KMSDRM": "OFF",
+        "CMAKE_DISABLE_PRECOMPILE_HEADERS": "ON"
+      }
+    },
+    {
+      "name": "steamdeck-cross",
+      "inherits": "linux-release",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-zig.cmake",
+      "cacheVariables": {
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/../../.tools/ninja/ninja.exe",
+        "SDL_ALSA_SHARED": "ON",
+        "SDL_PULSEAUDIO_SHARED": "ON",
+        "SDL_X11_SHARED": "ON",
+        "SDL_LIBURING": "OFF",
+        "SDL_X11_XTEST": "OFF",
+        "SDL_RPATH": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release"
+    },
+    {
+      "name": "steamdeck-cross",
+      "configurePreset": "steamdeck-cross"
+    }
+  ]
+}

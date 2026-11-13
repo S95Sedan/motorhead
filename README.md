@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  Preserving the look and feel of Motorhead, from Windows XP to modern PCs.
+  Preserving Motorhead on Windows and native Linux / Steam Deck.
 </p>
 
 <p align="center">
@@ -15,8 +15,8 @@
   <a href="#license">License</a>
 </p>
 
-An unofficial reconstruction of the original Motorhead for Windows. The aim is
-to preserve its appearance and gameplay while improving compatibility,
+An unofficial reconstruction of the original Motorhead for Windows and native
+Linux / Steam Deck. The aim is to preserve its appearance and gameplay while improving compatibility,
 display options, and usability on newer systems.
 
 **Source-only distribution.** Build your own installer from this repository.
@@ -51,12 +51,17 @@ BiTurbo is a community add-on, shown for compatibility; the add-on pack is not i
 <img src="docs/images/features.svg" alt="Features" width="100%">
 
 - Windows XP and newer support in a single game executable.
+- Native Linux / Steam Deck support with OpenGL, 1280x800 and 16:10 display.
 - Direct3D 9, Direct3D 11, Direct3D 12, Glide, and software rendering backends.
 - Widescreen, fullscreen, and borderless windowed display modes.
 - Selectable audio output devices and separate music/SFX levels.
 - Optional S40 Racing content imported from your own media.
 - Support for community add-on cars, without bundling the add-on packs.
 - A separately buildable model viewer for inspecting game content.
+
+Steam Deck runs natively without Proton, using OpenGL and fullscreen 1280x800
+by default. Resolution choices fit the handheld display or a connected monitor;
+software rendering remains available.
 
 Available renderers depend on your Windows version and hardware. Development
 is ongoing; compatibility and performance can vary, especially on older PCs.
@@ -67,7 +72,8 @@ is ongoing; compatibility and performance can vary, especially on older PCs.
 
 Use a **modern 64-bit Windows PC** to build. Windows XP is a game runtime
 target, not a build environment. The scripts require `curl.exe`, Windows
-PowerShell, and `certutil.exe` to be available.
+PowerShell and `certutil.exe`. Building the dual-platform installer also requires
+Python 3.10 or newer (`python.exe`) to prepare the native Linux compiler.
 
 1. Clone this repository with Git, or download and extract its ZIP.
 2. Run `build-installer.bat` from the repository root.
@@ -83,8 +89,12 @@ cd motorhead
 
 The batch file downloads pinned CMake, Ninja, and LLVM-MinGW tools into
 `.tools/`, checks downloaded archives against their SHA-256 hashes, and builds
-both the game and installer. An internet connection is required for the first
-tool downloads; no separate compiler installation is needed.
+the Windows game, native Linux game and dual-platform installer. Zig 0.15.2
+and the Linux sysroot are downloaded into `.tools/steamdeck-native`. An internet
+connection is required for the first downloads; no separate compiler is needed.
+
+Builds, downloaded tools and original game media are excluded
+from the source mirror.
 
 To build the optional model viewer, run `build-modelviewer.bat`.
 Its output is `bin/Modelviewer.exe`.
@@ -101,9 +111,11 @@ inspect a particular car, pass that folder and a relative CAR definition
 2. Select your original Motorhead CD-ROM or supported CUE/BIN image, and the
    official Motorhead 3.0 update (`mhp30.exe`). Placing the media and update
    beside the installer makes them easier to locate.
-3. Choose an installation folder and your soundtrack options. To import S40
-   Racing content, also supply its supported disc image.
-4. Launch `Motorhead.exe` from the installed game folder.
+3. Choose **Windows installation** or **Steam Deck portable folder**, then
+   select the destination. To import S40 Racing content, also supply its image.
+4. On Windows, launch `Motorhead.exe`. For Steam Deck, copy the entire portable
+   folder. Run `Launch-Motorhead.sh` once in Desktop Mode and approve execution,
+   then add it to Steam. Play in Gaming Mode with Proton compatibility disabled.
 
 The game needs its installed data folders beside the executable; the build
 output alone is not a complete playable installation. Original media, the

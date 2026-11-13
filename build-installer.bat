@@ -5,9 +5,25 @@ pushd "%~dp0"
 set "TOOLS_ROOT=%CD%\.tools"
 set "DOWNLOAD_ROOT=!TOOLS_ROOT!\downloads"
 
-echo [1/4] Preparing pinned CMake, Ninja, and LLVM-MinGW tools...
+echo [1/4] Preparing pinned Windows and Steam Deck build tools...
 call :prepare_tools
 if errorlevel 1 goto :failed
+
+if not exist "!TOOLS_ROOT!\steamdeck-native\dependencies.json" goto :prepare_native
+if not exist "!TOOLS_ROOT!\steamdeck-native\zig-x86_64-windows-0.15.2\zig.exe" goto :prepare_native
+if not exist "!TOOLS_ROOT!\steamdeck-native\sysroot\usr\include\X11\Xlib.h" goto :prepare_native
+goto :native_ready
+:prepare_native
+where python.exe >nul 2>nul
+if errorlevel 1 (
+    echo Python 3.10 or newer is required to prepare the native Steam Deck compiler.
+    goto :failed
+)
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
+if errorlevel 1 goto :failed
+python "project\motorhead-linux\cmake\bootstrap-steamdeck.py"
+if errorlevel 1 goto :failed
+:native_ready
 
 set "CMAKE=!TOOLS_ROOT!\cmake\bin\cmake.exe"
 
@@ -19,7 +35,7 @@ if errorlevel 1 (
     goto :failed
 )
 
-echo [3/4] Building Motorhead and Installer.exe...
+echo [3/4] Building Windows, native Steam Deck, and Installer.exe...
 "!CMAKE!" --build --preset windows-release --parallel 1
 if errorlevel 1 (
     popd
@@ -27,9 +43,9 @@ if errorlevel 1 (
 )
 popd
 
-echo [4/4] Staging the test package...
+echo [4/4] Staging Installer.exe...
 if not exist "bin" mkdir "bin"
-copy /Y "project\installer\build\bin\Installer.exe" "bin\Installer.exe" >nul
+copy /Y ".build\installer\bin\Installer.exe" "bin\Installer.exe" >nul
 if errorlevel 1 goto :failed
 
 echo.
