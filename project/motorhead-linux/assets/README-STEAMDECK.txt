@@ -57,6 +57,13 @@ OLED. A native build removes the Windows translation layer, but a speed or
 battery-life improvement is not guaranteed until measured on the Deck.
 Leave HDR off. For more headroom, try 960x600 or reduce view distance/detail.
 
+LAN MULTIPLAYER
+
+Windows and Steam Deck can play together on the same local network.
+Update Motorhead.exe on Windows and Motorhead on the Deck together. This build
+uses network protocol 3.2; older builds cannot join it. Keep the existing User
+folders to retain your settings, controls and saves.
+
 CONTROLS
 
 Menus, pause, and results:

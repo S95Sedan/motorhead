@@ -163,6 +163,10 @@ public:
       const std::array<WheelContactScalarState, 4U> &current);
   void
   seed_previous_vehicle_velocity(const OriginalBodyVelocityState &velocity);
+  [[nodiscard]] const OriginalBodyVelocityState &
+  previous_vehicle_velocity() const noexcept {
+    return previous_vehicle_velocity_;
+  }
   void seed_previous_wheel_contact_count(std::size_t count);
   void
   seed_previous_wheel_contact_flags(const std::array<std::uint32_t, 4U> &flags);

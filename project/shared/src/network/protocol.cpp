@@ -37,6 +37,17 @@ void write_u32(std::vector<std::uint8_t> &bytes, const std::size_t offset,
   bytes[offset + 3U] = static_cast<std::uint8_t>(value >> 24U);
 }
 
+std::uint64_t read_u64(const std::span<const std::uint8_t> bytes,
+                       const std::size_t offset) noexcept {
+  return read_u32(bytes, offset) |
+         (static_cast<std::uint64_t>(read_u32(bytes, offset + 4U)) << 32U);
+}
+void write_u64(std::vector<std::uint8_t> &bytes, const std::size_t offset,
+               const std::uint64_t value) noexcept {
+  write_u32(bytes, offset, static_cast<std::uint32_t>(value));
+  write_u32(bytes, offset + 4U, static_cast<std::uint32_t>(value >> 32U));
+}
+
 float read_float(const std::span<const std::uint8_t> bytes,
                  const std::size_t offset) noexcept {
   return std::bit_cast<float>(read_u32(bytes, offset));
@@ -106,10 +117,11 @@ std::optional<std::size_t> fixed_packet_size(const MessageType type) noexcept {
     return 4U;
   case MessageType::race_data:
     return 376U;
+  case MessageType::reserved20:
+    return 34U;
   case MessageType::lobby_message_request:
   case MessageType::lobby_message:
   case MessageType::horn:
-  case MessageType::reserved20:
     return std::nullopt;
   }
   return std::nullopt;
@@ -144,6 +156,9 @@ PacketParseResult parse_packet(const std::span<const std::uint8_t> bytes) {
     return {PacketError::invalid_size, std::nullopt, size};
   }
   if (type == MessageType::horn && size != 4U && size != 5U) {
+    return {PacketError::invalid_size, std::nullopt, size};
+  }
+  if (type == MessageType::reserved20 && (bytes[5U] < 1U || bytes[5U] > 4U)) {
     return {PacketError::invalid_size, std::nullopt, size};
   }
   Packet packet;
@@ -392,6 +407,7 @@ Packet make_race_input(const std::uint8_t peer, const RaceInputFrame &value) {
   result.bytes[25U] = value.pause_state ? 1U : 0U;
   result.bytes[26U] = value.shift_up ? 1U : 0U;
   result.bytes[27U] = value.shift_down ? 1U : 0U;
+  write_u32(result.bytes, 28U, value.restart_generation);
   return result;
 }
 
@@ -404,7 +420,7 @@ RaceInputFrame race_input(const Packet &packet) noexcept {
           packet.bytes[21U] != 0U,       packet.bytes[22U] != 0U,
           packet.bytes[23U] != 0U,       packet.bytes[24U] != 0U,
           packet.bytes[25U] != 0U,       packet.bytes[26U] != 0U,
-          packet.bytes[27U] != 0U};
+          packet.bytes[27U] != 0U,       read_u32(packet.bytes, 28U)};
 }
 
 Packet make_race_snapshot(const std::uint8_t peer, const RaceSnapshot &value) {
@@ -450,6 +466,7 @@ Packet make_race_snapshot(const std::uint8_t peer, const RaceSnapshot &value) {
   write_u32(result.bytes, 330U, value.restart_generation);
   write_u32(result.bytes, 334U, value.pause_generation);
   result.bytes[338U] = value.paused ? 1U : 0U;
+  write_u64(result.bytes, 339U, value.host_time_ms);
   return result;
 }
 
@@ -462,6 +479,10 @@ RaceSnapshot race_snapshot(const Packet &packet) {
   result.restart_generation = read_u32(packet.bytes, 330U);
   result.pause_generation = read_u32(packet.bytes, 334U);
   result.paused = packet.bytes[338U] != 0U;
+  result.host_time_ms = read_u64(packet.bytes, 339U);
+  if (packet.bytes[9U] > maximum_players) {
+    return result; // Empty snapshots fail semantic validation.
+  }
   const auto count = std::min<std::size_t>(packet.bytes[9U], maximum_players);
   constexpr std::size_t stride = 40U;
   result.vehicles.reserve(count);
@@ -494,6 +515,52 @@ RaceSnapshot race_snapshot(const Packet &packet) {
     result.vehicles.push_back(vehicle);
   }
   return result;
+}
+
+Packet make_race_sync(const std::uint8_t peer, const RaceSyncFrame &value) {
+  auto packet = make_packet(MessageType::reserved20, peer);
+  packet.bytes[5U] = static_cast<std::uint8_t>(value.kind);
+  write_u32(packet.bytes, 6U, value.generation);
+  write_u64(packet.bytes, 10U, value.client_time_ms);
+  write_u64(packet.bytes, 18U, value.host_time_ms);
+  write_u64(packet.bytes, 26U, value.start_time_ms);
+  return packet;
+}
+RaceSyncFrame race_sync(const Packet &packet) noexcept {
+  if (packet.bytes.size() != 34U)
+    return {};
+  return {static_cast<RaceSyncKind>(packet.bytes[5U]),
+          read_u32(packet.bytes, 6U), read_u64(packet.bytes, 10U),
+          read_u64(packet.bytes, 18U), read_u64(packet.bytes, 26U)};
+}
+bool valid_race_input(const RaceInputFrame &value) noexcept {
+  return std::isfinite(value.steering) && std::abs(value.steering) <= 1.0F &&
+         std::isfinite(value.throttle) && value.throttle >= 0.0F &&
+         value.throttle <= 1.0F && std::isfinite(value.brake) &&
+         value.brake >= 0.0F && value.brake <= 1.0F;
+}
+bool valid_race_snapshot(const RaceSnapshot &value) noexcept {
+  if (value.vehicles.empty() || value.vehicles.size() > maximum_players)
+    return false;
+  std::array<bool, maximum_players> seen{};
+  for (const auto &vehicle : value.vehicles) {
+    if (vehicle.peer >= maximum_players || seen[vehicle.peer])
+      return false;
+    seen[vehicle.peer] = true;
+    const auto finite = [](const auto &values) {
+      return std::all_of(values.begin(), values.end(), [](float v) {
+        return std::isfinite(v) && std::abs(v) < 1.0e7F;
+      });
+    };
+    float norm = 0.0F;
+    for (const auto q : vehicle.rotation)
+      norm += q * q;
+    if (!finite(vehicle.position) || !finite(vehicle.velocity) ||
+        !finite(vehicle.rotation) || !std::isfinite(vehicle.speed) ||
+        norm < 0.5F || norm > 1.5F)
+      return false;
+  }
+  return true;
 }
 
 } // namespace mh::network

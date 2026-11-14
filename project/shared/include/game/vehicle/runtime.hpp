@@ -116,6 +116,10 @@ public:
   seed_captured_body_state(const OriginalBodyPoseState &body_pose,
                            const OriginalBodyVelocityState &velocity,
                            const OriginalBodyVelocityState &previous_velocity);
+  // Corrects a live prediction without resetting angular, suspension,
+  // drivetrain, or preceding-velocity history. Called between physics slices.
+  void reconcile_network_body_state(const OriginalBodyPoseState &body_pose,
+                                    const OriginalBodyVelocityState &velocity);
   // Applies p3.1's race-level post-physics recovery owner at RVA
   // 0x0001d05c and its reset caller at 0x0007826c..0x00078313.
   [[nodiscard]] OriginalVehicleRaceRecoveryResult

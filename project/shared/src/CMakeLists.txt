@@ -112,7 +112,7 @@ endif()
 mh_set_project_warnings(mh_network)
 
 add_library(mh_sdl_platform STATIC platform/sdl_input.cpp "${MH_PLATFORM_ROOT}/src/platform/player_input.cpp")
-target_include_directories(mh_sdl_platform PUBLIC "${MH_INCLUDE_DIR}")
+target_include_directories(mh_sdl_platform PUBLIC "${MH_INCLUDE_DIR}" "${MH_PLATFORM_ROOT}/include")
 target_link_libraries(mh_sdl_platform PUBLIC mh_game SDL3::SDL3-static)
 mh_set_project_warnings(mh_sdl_platform)
 

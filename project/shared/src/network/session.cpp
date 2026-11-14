@@ -1,3 +1,4 @@
+#include <network/race_sync.hpp>
 #include <network/session.hpp>
 
 #include <algorithm>
@@ -15,6 +16,18 @@ namespace mh::network {
 namespace {
 
 using namespace mh::platform::sockets;
+
+bool configure_race_socket(Socket socket) {
+  const int enabled = 1;
+  const int send_bytes = 8192;
+  (void)setsockopt(socket, SOL_SOCKET, SO_SNDBUF,
+                   reinterpret_cast<const char *>(&send_bytes),
+                   sizeof(send_bytes));
+  return set_nonblocking(socket) &&
+         setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
+                    reinterpret_cast<const char *>(&enabled),
+                    sizeof(enabled)) == 0;
+}
 
 std::uint16_t read_u16(const std::uint8_t *bytes) noexcept {
   return static_cast<std::uint16_t>(bytes[0U]) |
@@ -108,6 +121,17 @@ struct LanSession::Implementation {
   std::vector<std::pair<std::uint8_t, RaceInputFrame>> inputs;
   std::optional<RaceConfiguration> pending_race;
   std::optional<RaceSnapshot> snapshot;
+  std::vector<RaceSnapshot> snapshots;
+  std::optional<std::uint32_t> last_snapshot_tick;
+  HostClock host_clock;
+  RaceTimeline timeline;
+  std::uint32_t race_generation = 0U;
+  std::array<bool, maximum_players> loaded{};
+  bool local_loaded = false;
+  bool loaded_sent = false;
+  bool race_paused = false;
+  std::uint64_t last_clock_probe_ms = 0U;
+  std::array<std::optional<std::uint32_t>, maximum_players> last_input_tick{};
   std::optional<std::vector<RaceResultData>> results;
   std::uint64_t now_ms = 0U;
   std::uint64_t last_discovery_ms = 0U;
@@ -152,6 +176,53 @@ struct LanSession::Implementation {
   }
 
   void queue(Connection &connection, const Packet &packet) {
+    if (connection.socket == invalid_socket)
+      return;
+    // Retire completed packet prefixes even when the socket never drains to
+    // zero; otherwise a persistently slow connection retains sent history.
+    std::size_t retired = 0U;
+    while (retired < connection.sent) {
+      const auto parsed = parse_packet(
+          std::span<const std::uint8_t>(connection.outgoing).subspan(retired));
+      if (!parsed.packet || retired + parsed.consumed > connection.sent)
+        break;
+      retired += parsed.consumed;
+    }
+    if (retired != 0U) {
+      connection.outgoing.erase(connection.outgoing.begin(),
+                                connection.outgoing.begin() +
+                                    static_cast<std::ptrdiff_t>(retired));
+      connection.sent -= retired;
+    }
+    // Replace only WHOLE unsent state packets, never the partially sent TCP
+    // prefix or command edges. This prevents old poses/held controls queuing
+    // behind a slow receiver while preserving pause/restart/shift ordering.
+    const auto replaceable = [](const Packet &p) {
+      if (p.type == MessageType::race_data)
+        return p.bytes[9U] != 0U;
+      if (p.type != MessageType::car_data)
+        return false;
+      const auto input = race_input(p);
+      return !input.restart_requested && !input.pause_requested &&
+             !input.shift_up && !input.shift_down && !input.horn;
+    };
+    if (state == SessionState::racing && replaceable(packet)) {
+      std::size_t offset = 0U;
+      while (offset < connection.outgoing.size()) {
+        const auto parsed = parse_packet(
+            std::span<const std::uint8_t>(connection.outgoing).subspan(offset));
+        if (!parsed.packet)
+          break;
+        if (offset >= connection.sent && parsed.packet->type == packet.type &&
+            replaceable(*parsed.packet)) {
+          connection.outgoing.erase(
+              connection.outgoing.begin() + static_cast<std::ptrdiff_t>(offset),
+              connection.outgoing.begin() +
+                  static_cast<std::ptrdiff_t>(offset + parsed.consumed));
+        } else
+          offset += parsed.consumed;
+      }
+    }
     constexpr std::size_t maximum_buffered_bytes = 64U * 1024U;
     if (connection.outgoing.size() - connection.sent + packet.bytes.size() >
         maximum_buffered_bytes) {
@@ -266,7 +337,8 @@ struct LanSession::Implementation {
         denial = 3U;
       } else if (join_request_password(packet) != password) {
         denial = 1U;
-      } else if (players.size() >= maximum_players) {
+      } else if (players.size() >= maximum_players ||
+                 state == SessionState::racing) {
         denial = 2U;
       }
       if (denial != 0U) {
@@ -310,6 +382,7 @@ struct LanSession::Implementation {
     }
 
     if (packet.peer != connection.peer &&
+        packet.type != MessageType::ping_request &&
         packet.type != MessageType::start_request) {
       return;
     }
@@ -365,9 +438,32 @@ struct LanSession::Implementation {
                 : 0U;
       }
       break;
-    case MessageType::car_data:
-      inputs.emplace_back(packet.peer, race_input(packet));
+    case MessageType::reserved20: {
+      const auto sync = race_sync(packet);
+      if (sync.kind == RaceSyncKind::probe) {
+        queue(connection,
+              make_race_sync(local_peer, {RaceSyncKind::reply, race_generation,
+                                          sync.client_time_ms, now_ms, 0U}));
+      } else if (state == SessionState::racing &&
+                 sync.kind == RaceSyncKind::loaded &&
+                 sync.generation == race_generation)
+        loaded[connection.peer] = true;
       break;
+    }
+    case MessageType::car_data: {
+      const auto input = race_input(packet);
+      if (state != SessionState::racing ||
+          input.restart_generation != race_generation ||
+          !valid_race_input(input))
+        break;
+      auto &last = last_input_tick[connection.peer];
+      if (last && !newer_sequence(input.tick, *last))
+        break;
+      last = input.tick;
+      if (inputs.size() < 512U)
+        inputs.emplace_back(connection.peer, input);
+      break;
+    }
     case MessageType::disconnect:
       broadcast(make_packet(MessageType::disconnect, connection.peer),
                 connection.socket);
@@ -448,7 +544,18 @@ struct LanSession::Implementation {
     }
     case MessageType::race_data:
       if (state == SessionState::racing) {
-        snapshot = race_snapshot(packet);
+        auto next = race_snapshot(packet);
+        if (!valid_race_snapshot(next) ||
+            (next.restart_generation != race_generation &&
+             !newer_sequence(next.restart_generation, race_generation)) ||
+            (last_snapshot_tick &&
+             !newer_sequence(next.tick, *last_snapshot_tick)))
+          break;
+        last_snapshot_tick = next.tick;
+        snapshot = next;
+        snapshots.push_back(std::move(next));
+        if (snapshots.size() > 32U)
+          snapshots.erase(snapshots.begin());
       } else {
         pending_race = race_configuration(packet);
         events.push_back(
@@ -456,9 +563,22 @@ struct LanSession::Implementation {
       }
       break;
     case MessageType::start_request:
+      reset_barrier(0U);
       state = SessionState::racing;
       events.push_back({SessionEventKind::race_started, 0U, {}});
       break;
+    case MessageType::reserved20: {
+      const auto sync = race_sync(packet);
+      if (sync.kind == RaceSyncKind::reply &&
+          sync.client_time_ms <= last_clock_probe_ms) {
+        host_clock.observe(sync.client_time_ms, now_ms, sync.host_time_ms);
+      } else if (state == SessionState::racing &&
+                 sync.kind == RaceSyncKind::timeline &&
+                 sync.generation == race_generation) {
+        timeline.set(sync.start_time_ms, sync.host_time_ms);
+      }
+      break;
+    }
     case MessageType::leave_game:
       if (state == SessionState::racing) {
         for (auto &player : players) {
@@ -582,7 +702,11 @@ struct LanSession::Implementation {
                static_cast<int>(std::min<std::size_t>(
                    remaining,
                    static_cast<std::size_t>(std::numeric_limits<int>::max()))),
+#ifdef MSG_NOSIGNAL
+               MSG_NOSIGNAL);
+#else
                0);
+#endif
       if (count > 0) {
         connection.sent += static_cast<std::size_t>(count);
       } else if (count < 0 && would_block(socket_error())) {
@@ -613,7 +737,7 @@ struct LanSession::Implementation {
       if (accepted == invalid_socket) {
         break;
       }
-      if (!set_nonblocking(accepted)) {
+      if (!configure_race_socket(accepted)) {
         Socket copy = accepted;
         close_socket(copy);
         continue;
@@ -622,6 +746,53 @@ struct LanSession::Implementation {
       connection.socket = accepted;
       connection.last_receive_ms = now_ms;
       connections.push_back(std::move(connection));
+    }
+  }
+
+  void reset_barrier(std::uint32_t generation) {
+    race_generation = generation;
+    timeline.reset();
+    loaded.fill(false);
+    local_loaded = loaded_sent = false;
+    race_paused = false;
+    last_input_tick.fill(std::nullopt);
+    inputs.clear();
+    snapshot.reset();
+    snapshots.clear();
+    last_snapshot_tick.reset();
+  }
+
+  void broadcast_timeline() {
+    broadcast(
+        make_race_sync(local_peer, {RaceSyncKind::timeline, race_generation, 0U,
+                                    timeline.paused_at(), timeline.start()}));
+  }
+
+  void service_race_clock() {
+    if (state != SessionState::racing && state != SessionState::lobby)
+      return;
+    if (!host_mode && !connections.empty() &&
+        (last_clock_probe_ms == 0U || now_ms - last_clock_probe_ms >= 250U)) {
+      last_clock_probe_ms = now_ms;
+      queue(connections.front(),
+            make_race_sync(local_peer, {RaceSyncKind::probe, race_generation,
+                                        now_ms, 0U, 0U}));
+    }
+    if (state != SessionState::racing)
+      return;
+    if (!host_mode && local_loaded && !loaded_sent && host_clock.ready() &&
+        !connections.empty()) {
+      queue(connections.front(),
+            make_race_sync(local_peer, {RaceSyncKind::loaded, race_generation,
+                                        0U, 0U, 0U}));
+      loaded_sent = true;
+    }
+    if (host_mode && local_loaded && !timeline.start() &&
+        std::all_of(players.begin(), players.end(),
+                    [this](const auto &p) { return loaded[p.peer]; })) {
+      timeline.set(now_ms + 1000U);
+      timeline.pause(race_paused, now_ms);
+      broadcast_timeline();
     }
   }
 
@@ -776,7 +947,7 @@ bool LanSession::join(const JoinOptions &options, const std::uint64_t now_ms) {
   Implementation::Connection connection;
   connection.socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (connection.socket == invalid_socket ||
-      !set_nonblocking(connection.socket)) {
+      !configure_race_socket(connection.socket)) {
     impl.fail("could not create multiplayer connection");
     return false;
   }
@@ -798,6 +969,7 @@ bool LanSession::join(const JoinOptions &options, const std::uint64_t now_ms) {
 void LanSession::tick(const std::uint64_t now_ms) {
   auto &impl = *implementation_;
   impl.now_ms = now_ms;
+  impl.service_race_clock();
   if (impl.host_mode) {
     impl.accept_connections();
   }
@@ -854,8 +1026,7 @@ void LanSession::tick(const std::uint64_t now_ms) {
   impl.connections.erase(
       std::remove_if(impl.connections.begin(), impl.connections.end(),
                      [](const Implementation::Connection &connection) {
-                       return connection.socket == invalid_socket &&
-                              connection.outgoing.empty();
+                       return connection.socket == invalid_socket;
                      }),
       impl.connections.end());
   if ((impl.state == SessionState::lobby ||
@@ -894,6 +1065,9 @@ void LanSession::disconnect(const std::string_view reason) {
   impl.pending_race.reset();
   impl.snapshot.reset();
   impl.results.reset();
+  impl.reset_barrier(0U);
+  impl.host_clock = {};
+  impl.last_clock_probe_ms = 0U;
   impl.host_mode = false;
   impl.local_peer = 0U;
   impl.state = SessionState::offline;
@@ -1080,6 +1254,7 @@ bool LanSession::start_race(const RaceConfiguration &configuration) {
     return false;
   }
   impl.pending_race = configuration;
+  impl.reset_barrier(0U);
   impl.broadcast(make_race_configuration(impl.local_peer, configuration));
   impl.broadcast(make_packet(MessageType::start_request));
   impl.state = SessionState::racing;
@@ -1105,11 +1280,13 @@ LanSession::pending_race_configuration() const noexcept {
 
 bool LanSession::send_input(const RaceInputFrame &input) {
   auto &impl = *implementation_;
-  if (impl.state != SessionState::racing) {
+  if (impl.state != SessionState::racing || !valid_race_input(input) ||
+      input.restart_generation != impl.race_generation) {
     return false;
   }
   if (impl.host_mode) {
-    impl.inputs.emplace_back(impl.local_peer, input);
+    // The host already owns its local controls. Echoing these one frame
+    // later would replay local pause/restart/shift edges.
   } else if (!impl.connections.empty()) {
     impl.queue(impl.connections.front(),
                make_race_input(impl.local_peer, input));
@@ -1125,7 +1302,8 @@ std::vector<std::pair<std::uint8_t, RaceInputFrame>> LanSession::take_inputs() {
 
 bool LanSession::publish_snapshot(const RaceSnapshot &snapshot) {
   auto &impl = *implementation_;
-  if (!impl.host_mode || impl.state != SessionState::racing) {
+  if (!impl.host_mode || impl.state != SessionState::racing ||
+      !valid_race_snapshot(snapshot)) {
     return false;
   }
   impl.broadcast(make_race_snapshot(impl.local_peer, snapshot));
@@ -1133,7 +1311,44 @@ bool LanSession::publish_snapshot(const RaceSnapshot &snapshot) {
 }
 
 std::optional<RaceSnapshot> LanSession::take_snapshot() {
+  implementation_->snapshots.clear();
   return std::exchange(implementation_->snapshot, std::nullopt);
+}
+
+std::vector<RaceSnapshot> LanSession::take_snapshots() {
+  implementation_->snapshot.reset();
+  return std::exchange(implementation_->snapshots, {});
+}
+
+void LanSession::reset_race_barrier(const std::uint32_t generation) {
+  if (implementation_->state == SessionState::racing)
+    implementation_->reset_barrier(generation);
+}
+void LanSession::mark_race_loaded(const std::uint32_t generation) {
+  auto &impl = *implementation_;
+  if (impl.state != SessionState::racing)
+    return;
+  if (generation != impl.race_generation)
+    impl.reset_barrier(generation);
+  impl.local_loaded = true;
+  impl.loaded[impl.local_peer] = true;
+}
+void LanSession::set_race_paused(const bool paused) {
+  auto &impl = *implementation_;
+  if (!impl.host_mode || impl.state != SessionState::racing)
+    return;
+  impl.race_paused = paused;
+  impl.timeline.pause(paused, impl.now_ms);
+  impl.broadcast_timeline();
+}
+std::uint64_t LanSession::host_time_ms(const std::uint64_t local_ms) const {
+  return implementation_->host_mode
+             ? local_ms
+             : implementation_->host_clock.host_time(local_ms);
+}
+std::optional<std::uint64_t>
+LanSession::race_elapsed_ms(const std::uint64_t local_ms) const {
+  return implementation_->timeline.elapsed(host_time_ms(local_ms));
 }
 
 bool LanSession::publish_results(

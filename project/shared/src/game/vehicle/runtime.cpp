@@ -412,6 +412,42 @@ void OriginalVehicleRuntime::seed_captured_body_state(
   scene_.seed_previous_vehicle_velocity(previous_velocity);
 }
 
+void OriginalVehicleRuntime::reconcile_network_body_state(
+    const OriginalBodyPoseState &body_pose,
+    const OriginalBodyVelocityState &velocity) {
+  if (pending_interleaved_collision_step_ || outer_frame_active_) {
+    throw std::logic_error("network correction requires a completed physics frame");
+  }
+  const auto before = state_.pose;
+  auto preceding_pose = previous_pose_;
+  auto preceding_velocity = scene_.previous_vehicle_velocity();
+  for (std::size_t axis = 0U; axis < 3U; ++axis) {
+    preceding_pose.world_position[axis] +=
+        body_pose.world_position[axis] - before.world_position[axis];
+    preceding_velocity.local_linear[axis] +=
+        velocity.local_linear[axis] - state_.velocity.local_linear[axis];
+    preceding_velocity.local_angular[axis] +=
+        velocity.local_angular[axis] - state_.velocity.local_angular[axis];
+  }
+  // Row-axis matrices: apply the same relative rotation to presentation
+  // history, preserving the last physical movement across the correction.
+  BodyBasis3 rotation{};
+  BodyBasis3 corrected_previous{};
+  for (std::size_t row = 0U; row < 3U; ++row)
+    for (std::size_t column = 0U; column < 3U; ++column)
+      for (std::size_t axis = 0U; axis < 3U; ++axis)
+        rotation[row][column] +=
+            before.body_basis[axis][row] * body_pose.body_basis[axis][column];
+  for (std::size_t row = 0U; row < 3U; ++row)
+    for (std::size_t column = 0U; column < 3U; ++column)
+      for (std::size_t axis = 0U; axis < 3U; ++axis)
+        corrected_previous[row][column] +=
+            preceding_pose.body_basis[row][axis] * rotation[axis][column];
+  preceding_pose.body_basis = corrected_previous;
+  seed_captured_body_state(body_pose, velocity, preceding_velocity);
+  previous_pose_ = preceding_pose;
+}
+
 OriginalVehicleRaceRecoveryResult OriginalVehicleRuntime::update_race_recovery(
     const OriginalVehicleModeCSceneFrame &frame,
     const OriginalVehicleRaceRecoveryInput &input) {

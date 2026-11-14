@@ -23,6 +23,73 @@
 
 namespace mh::ui {
 
+void compose_front_end_display_frame(
+    const mh::ui::FrontEndFrame &composed,
+    const mh::content::TgaImage &background, mh::ui::FrontEndFrame &result,
+    const bool scale_complete_frame) {
+  constexpr std::uint32_t display_height = 480U;
+  if (composed.width != mh::ui::front_end_logical_width ||
+      composed.height != mh::ui::front_end_logical_height ||
+      composed.rgba.size() !=
+          static_cast<std::size_t>(composed.width) * composed.height * 4U ||
+      background.width != composed.width ||
+      background.height != composed.height ||
+      background.rgba.size() != composed.rgba.size()) {
+    throw std::runtime_error("front-end display frame is malformed");
+  }
+
+  result.width = composed.width;
+  result.height = display_height;
+  result.rgba.resize(
+      static_cast<std::size_t>(result.width) * result.height * 4U);
+
+  const auto &backdrop = scale_complete_frame ? composed.rgba : background.rgba;
+
+  // Expand the 640x400 Back.tga backdrop to the full 640x480 display, then
+  // preserve MENU.SPR/FNT artwork at its authored proportions. This keeps the
+  // Track/Car previews and gauges oval without reintroducing letterbox bars.
+  std::uint32_t source_y = 0U;
+  std::uint32_t row_fraction = 0U;
+  for (std::uint32_t y = 0U; y < result.height; ++y) {
+    const auto source_offset =
+        static_cast<std::size_t>(source_y) * background.width * 4U;
+    const auto destination_offset =
+        static_cast<std::size_t>(y) * result.width * 4U;
+    std::copy_n(
+        backdrop.begin() + static_cast<std::ptrdiff_t>(source_offset),
+        static_cast<std::ptrdiff_t>(result.width * 4U),
+        result.rgba.begin() + static_cast<std::ptrdiff_t>(destination_offset));
+    row_fraction += background.height;
+    if (row_fraction >= result.height) {
+      row_fraction -= result.height;
+      source_y = std::min(source_y + 1U,
+                          static_cast<std::uint32_t>(background.height - 1U));
+    }
+  }
+
+  if (scale_complete_frame) {
+    return;
+  }
+
+  // Preserve every authored overlay pixel at its original Y coordinate.  A
+  // pixel equal to the source backdrop is transparent menu space and should
+  // continue to reveal the expanded background.
+  for (std::uint32_t y = 0U; y < composed.height; ++y) {
+    for (std::uint32_t x = 0U; x < composed.width; ++x) {
+      const auto pixel =
+          (static_cast<std::size_t>(y) * composed.width + x) * 4U;
+      std::uint32_t composed_pixel = 0U;
+      std::uint32_t background_pixel = 0U;
+      std::memcpy(&composed_pixel, composed.rgba.data() + pixel, 4U);
+      std::memcpy(&background_pixel, background.rgba.data() + pixel, 4U);
+      if (composed_pixel != background_pixel) {
+        std::memcpy(result.rgba.data() + pixel, &composed_pixel, 4U);
+      }
+    }
+  }
+}
+
+
 FrontEndPresentationRect
 front_end_presentation_rect(const std::uint32_t output_width,
                             const std::uint32_t output_height) noexcept {
@@ -3375,7 +3442,10 @@ FrontEndFrame compose_multiplayer_frame(
                                                        : right->grid_position;
                        return left_position < right_position;
                      });
-    auto y = 160;
+    // The table heading is baked into the lobby art at y=149..158. Keep
+    // all eight rows beneath it and above the Chat input at y=284.
+    auto y = 170;
+    ordered_players.resize(std::min<std::size_t>(ordered_players.size(), 8U));
     for (const auto *player_pointer : ordered_players) {
       const auto &player = *player_pointer;
       const std::array<std::uint8_t, 3U> player_color{
@@ -3394,7 +3464,7 @@ FrontEndFrame compose_multiplayer_frame(
       value(std::to_string(static_cast<unsigned>(player.lap)), 540, y,
             player_color);
       value(std::to_string(player.ping_ms), 580, y, player_color);
-      y += 10;
+      y += 12;
     }
     if (configuration.lobby_chat_lines.empty()) {
       value(configuration.status, 50, 300);
@@ -3420,7 +3490,7 @@ FrontEndFrame compose_multiplayer_frame(
     if ((elapsed_ms / 500U) % 2U == 0U) {
       chat_input.push_back('_');
     }
-    value(chat_input, 50, 370);
+    value(chat_input, 94, 284);
     return result;
   }
   place_transition_sprite(result, menu_sprites, positions, bank,

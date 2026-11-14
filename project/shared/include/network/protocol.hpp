@@ -42,7 +42,9 @@ enum class MessageType : std::uint16_t {
 inline constexpr std::size_t packet_prefix_size = 4U;
 inline constexpr std::size_t packet_peer_prefix_size = 5U;
 inline constexpr std::size_t maximum_packet_size = 1103U;
-inline constexpr float protocol_version = 3.1F;
+// 3.2 requires the loaded barrier and host-clock extension. Never silently
+// join a 3.1 runtime which would start its race independently.
+inline constexpr float protocol_version = 3.2F;
 inline constexpr std::uint8_t maximum_players = 8U;
 
 struct Packet {
@@ -162,6 +164,7 @@ struct RaceInputFrame {
   bool pause_state = false;
   bool shift_up = false;
   bool shift_down = false;
+  std::uint32_t restart_generation = 0U;
 };
 
 [[nodiscard]] Packet make_race_input(std::uint8_t peer,
@@ -185,7 +188,22 @@ struct RaceSnapshot {
   std::uint32_t pause_generation = 0U;
   bool paused = false;
   std::vector<NetworkVehicleState> vehicles;
+  std::uint64_t host_time_ms = 0U;
 };
+
+enum class RaceSyncKind : std::uint8_t { loaded = 1, probe, reply, timeline };
+struct RaceSyncFrame {
+  RaceSyncKind kind = RaceSyncKind::loaded;
+  std::uint32_t generation = 0U;
+  std::uint64_t client_time_ms = 0U;
+  std::uint64_t host_time_ms = 0U;
+  std::uint64_t start_time_ms = 0U;
+};
+[[nodiscard]] Packet make_race_sync(std::uint8_t peer,
+                                    const RaceSyncFrame &value);
+[[nodiscard]] RaceSyncFrame race_sync(const Packet &packet) noexcept;
+[[nodiscard]] bool valid_race_input(const RaceInputFrame &value) noexcept;
+[[nodiscard]] bool valid_race_snapshot(const RaceSnapshot &value) noexcept;
 
 [[nodiscard]] Packet make_race_snapshot(std::uint8_t peer,
                                         const RaceSnapshot &value);

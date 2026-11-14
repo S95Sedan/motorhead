@@ -156,11 +156,20 @@ public:
   [[nodiscard]] std::optional<RaceConfiguration>
   pending_race_configuration() const noexcept;
 
+  // Called only after the playable runtime has finished loading/resetting.
+  void mark_race_loaded(std::uint32_t generation);
+  void reset_race_barrier(std::uint32_t generation);
+  void set_race_paused(bool paused);
+  [[nodiscard]] std::uint64_t host_time_ms(std::uint64_t local_ms) const;
+  [[nodiscard]] std::optional<std::uint64_t>
+  race_elapsed_ms(std::uint64_t local_ms) const;
+
   [[nodiscard]] bool send_input(const RaceInputFrame &input);
   [[nodiscard]] std::vector<std::pair<std::uint8_t, RaceInputFrame>>
   take_inputs();
   [[nodiscard]] bool publish_snapshot(const RaceSnapshot &snapshot);
   [[nodiscard]] std::optional<RaceSnapshot> take_snapshot();
+  [[nodiscard]] std::vector<RaceSnapshot> take_snapshots();
   [[nodiscard]] bool publish_results(std::span<const RaceResultData> results);
   [[nodiscard]] std::optional<std::vector<RaceResultData>> take_results();
   void finish_race();

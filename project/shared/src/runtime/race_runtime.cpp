@@ -35,6 +35,7 @@
 #include <game/vehicle/presentation.hpp>
 #include <game/vehicle/runtime.hpp>
 #include <network/session.hpp>
+#include <network/race_sync.hpp>
 #include <platform/sdl_input.hpp>
 #include <platform/frontend.hpp>
 #include <platform/renderer_support.hpp>
@@ -10325,7 +10326,19 @@ int mh::app::run_motorhead_race(
     std::array<mh::game::ControlInput, mh::network::maximum_players>
         network_controls{};
     std::uint32_t network_simulation_tick = 0U;
-    std::uint32_t network_snapshot_divider = 0U;
+    std::uint32_t network_snapshot_sequence = 0U;
+    std::uint64_t network_last_snapshot_ms = 0U;
+    double network_physics_remainder = 0.0;
+    mh::network::RacePhysicsClock network_physics_clock;
+    std::uint64_t network_race_elapsed_ms = 0U;
+    mh::network::SnapshotBuffer network_snapshot_buffer;
+    mh::network::PredictionHistory network_prediction;
+    auto network_previous_player_pose = vehicle.state().pose;
+    std::array<mh::game::VehicleLaunchTractionRuntime,
+               mh::network::maximum_players>
+        network_launch_traction;
+    std::array<std::uint64_t, mh::network::maximum_players>
+        network_input_received_ms{};
     std::uint32_t network_restart_generation = 0U;
     std::uint32_t network_pause_generation = 0U;
     std::uint32_t observed_network_restart_generation = 0U;
@@ -10620,6 +10633,7 @@ int mh::app::run_motorhead_race(
       }
       mh::network::RaceInputFrame request;
       request.tick = network_simulation_tick++;
+      request.restart_generation = observed_network_restart_generation;
       request.pause_requested = true;
       request.pause_state = paused;
       (void)multiplayer_session->send_input(request);
@@ -10643,43 +10657,60 @@ int mh::app::run_motorhead_race(
       }
       mh::network::RaceInputFrame request;
       request.tick = network_simulation_tick++;
+      request.restart_generation = observed_network_restart_generation;
       request.restart_requested = true;
       (void)multiplayer_session->send_input(request);
       // Stay frozen on the pause frame until the host publishes the committed
       // restart generation. This prevents the requesting client from running
       // a separate countdown while the host is still on the old race.
     };
+    const auto capture_network_vehicle =
+        [&](const std::size_t slot,
+            const mh::game::OriginalVehicleRuntime &runtime) {
+          mh::network::NetworkVehicleState value;
+          value.peer = network_peer_by_slot[slot];
+          for (std::size_t axis = 0U; axis < 3U; ++axis) {
+            value.position[axis] =
+                static_cast<float>(runtime.state().pose.world_position[axis]);
+            value.velocity[axis] =
+                static_cast<float>(runtime.state().velocity.local_linear[axis]);
+          }
+          value.rotation = basis_to_quaternion(runtime.state().pose);
+          value.speed = value.velocity[2U];
+          value.lap = hud_completed_laps[slot];
+          value.checkpoint =
+              static_cast<std::uint32_t>(hud_vehicle_samples[slot]);
+          value.finished = hud_finish_times[slot].has_value();
+          return value;
+        };
+    const auto apply_network_vehicle =
+        [&](mh::game::OriginalVehicleRuntime &runtime,
+            const mh::network::NetworkVehicleState &value) {
+          auto pose = runtime.state().pose;
+          // Keep predicted angular velocity, drivetrain and suspension history.
+          // The old receive path zeroed angular velocity on every packet.
+          auto velocity = runtime.state().velocity;
+          for (std::size_t axis = 0U; axis < 3U; ++axis) {
+            pose.world_position[axis] = value.position[axis];
+            velocity.local_linear[axis] = value.velocity[axis];
+          }
+          pose.body_basis = quaternion_to_basis(value.rotation);
+      runtime.reconcile_network_body_state(pose, velocity);
+        };
     const auto make_network_snapshot = [&] {
       mh::network::RaceSnapshot snapshot;
-      snapshot.tick = network_simulation_tick;
+      snapshot.tick = network_snapshot_sequence++;
+      snapshot.host_time_ms =
+          SDL_GetTicks() -
+          static_cast<std::uint64_t>(network_physics_remainder * 1000.0);
       snapshot.restart_generation = network_restart_generation;
       snapshot.pause_generation = network_pause_generation;
       snapshot.paused = network_pause_state;
       snapshot.vehicles.reserve(race_roster.size());
-      const auto append_vehicle_state =
-          [&](const std::size_t slot,
-              const mh::game::OriginalVehicleRuntime &runtime) {
-            const auto &state = runtime.state();
-            mh::network::NetworkVehicleState network_state;
-            network_state.peer = network_peer_by_slot[slot];
-            for (std::size_t axis = 0U; axis < 3U; ++axis) {
-              network_state.position[axis] =
-                  static_cast<float>(state.pose.world_position[axis]);
-              network_state.velocity[axis] =
-                  static_cast<float>(state.velocity.local_linear[axis]);
-            }
-            network_state.rotation = basis_to_quaternion(state.pose);
-            network_state.speed =
-                static_cast<float>(state.velocity.local_linear[2U]);
-            network_state.lap = hud_completed_laps[slot];
-            network_state.checkpoint =
-                static_cast<std::uint32_t>(hud_vehicle_samples[slot]);
-            network_state.finished = hud_finish_times[slot].has_value();
-            snapshot.vehicles.push_back(network_state);
-          };
-      append_vehicle_state(0U, vehicle);
+      snapshot.vehicles.push_back(capture_network_vehicle(0U, vehicle));
       for (const auto &opponent : opponents) {
-        append_vehicle_state(opponent.slot_index, *opponent.vehicle);
+        snapshot.vehicles.push_back(
+            capture_network_vehicle(opponent.slot_index, *opponent.vehicle));
       }
       return snapshot;
     };
@@ -11022,6 +11053,7 @@ int mh::app::run_motorhead_race(
     nearer_vehicles.reserve(opponents.size());
     std::vector<std::size_t> rendered_ghost_samples;
     mh::platform::RacePlatformInput race_platform;
+    if (networked_race) multiplayer_session->mark_race_loaded(0U);
     while (running) {
       SDL_Event event{};
       while (SDL_PollEvent(&event)) {
@@ -11463,15 +11495,27 @@ int mh::app::run_motorhead_race(
                   environment_scene_frame);
         }
       }
-      const auto physics_schedule =
+      auto physics_schedule =
           result_visible || pause_visible
               ? mh::game::OriginalPhysicsSliceSchedule{}
               : mh::game::make_original_physics_slice_schedule(
                     std::chrono::duration<double>(elapsed).count());
+      if (networked_race) {
+        // Multiplayer prediction and authority use the same 50 Hz interval;
+        // the recovered single-player/replay variable slice path is unchanged.
+        physics_schedule = {};
+        physics_schedule.slice_count = network_physics_clock.consume(
+            std::chrono::duration<double>(elapsed).count(),
+            result_visible || pause_visible);
+        std::fill_n(physics_schedule.slices.begin(),
+                    physics_schedule.slice_count, 0.02F);
+        network_physics_remainder = network_physics_clock.remainder();
+      }
       std::array<bool, 3U> countdown_sound_requested{};
       auto go_sound_requested = false;
       auto finish_sound_requested = false;
-      auto outer_frame_active = physics_schedule.slice_count != 0U;
+      auto outer_frame_active =
+          !networked_race && physics_schedule.slice_count != 0U;
       if (networked_race) {
         multiplayer_session->tick(SDL_GetTicks());
         if (!multiplayer_session->is_host()) {
@@ -11492,12 +11536,17 @@ int mh::app::run_motorhead_race(
         } else if (multiplayer_session->is_host()) {
           for (const auto &[peer, input] : multiplayer_session->take_inputs()) {
             if (peer < network_controls.size()) {
+              const auto shift_up =
+                  network_controls[peer].shift_up || input.shift_up;
+              const auto shift_down =
+                  network_controls[peer].shift_down || input.shift_down;
+              network_input_received_ms[peer] = SDL_GetTicks();
               network_controls[peer] = {static_cast<double>(input.throttle),
                                         static_cast<double>(input.brake),
                                         static_cast<double>(input.steering),
                                         input.handbrake,
-                                        input.shift_up,
-                                        input.shift_down};
+                                        shift_up,
+                                        shift_down};
             }
             if (input.restart_requested) {
               pause_restart_requested = true;
@@ -11519,55 +11568,67 @@ int mh::app::run_motorhead_race(
               network_control_state_dirty = true;
             }
           }
-        } else if (const auto snapshot = multiplayer_session->take_snapshot();
-                   snapshot.has_value()) {
-          if (snapshot->restart_generation !=
-              observed_network_restart_generation) {
-            observed_network_restart_generation = snapshot->restart_generation;
-            network_restart_pending = true;
-            pause_visible = false;
-          }
-          if (snapshot->pause_generation != observed_network_pause_generation) {
-            observed_network_pause_generation = snapshot->pause_generation;
-            network_pause_state = snapshot->paused;
-            pause_visible = snapshot->paused;
-            pause_menu.page = RacePausePage::race;
-            pause_menu.selections[0U] = 0U;
-            if (pause_visible) {
-              input_router.reset();
-            }
-          }
-          for (const auto &network_state : snapshot->vehicles) {
-            const auto found =
-                std::find(network_peer_by_slot.begin(),
-                          network_peer_by_slot.end(), network_state.peer);
-            if (found == network_peer_by_slot.end()) {
+        } else {
+          const auto received = multiplayer_session->take_snapshots();
+          for (const auto &frame : received) {
+            if (!network_snapshot_buffer.push(frame))
               continue;
+            const auto *snapshot = &frame;
+            if (snapshot->restart_generation !=
+                observed_network_restart_generation) {
+              observed_network_restart_generation =
+                  snapshot->restart_generation;
+              network_restart_pending = true;
+              pause_visible = false;
             }
-            const auto slot = static_cast<std::size_t>(
-                std::distance(network_peer_by_slot.begin(), found));
-            auto *runtime =
-                slot == 0U ? &vehicle : opponents[slot - 1U].vehicle.get();
-            mh::game::OriginalBodyPoseState pose = runtime->state().pose;
-            pose.world_position = {
-                static_cast<double>(network_state.position[0U]),
-                static_cast<double>(network_state.position[1U]),
-                static_cast<double>(network_state.position[2U])};
-            pose.body_basis = quaternion_to_basis(network_state.rotation);
-            mh::game::OriginalBodyVelocityState velocity{};
-            velocity.local_linear = {
-                static_cast<double>(network_state.velocity[0U]),
-                static_cast<double>(network_state.velocity[1U]),
-                static_cast<double>(network_state.velocity[2U])};
-            runtime->seed_captured_body_state(pose, velocity, velocity);
+            if (snapshot->pause_generation !=
+                observed_network_pause_generation) {
+              observed_network_pause_generation = snapshot->pause_generation;
+              network_pause_state = snapshot->paused;
+              pause_visible = snapshot->paused;
+              pause_menu.page = RacePausePage::race;
+              pause_menu.selections[0U] = 0U;
+              if (pause_visible) {
+                input_router.reset();
+              }
+            }
+          }
+          if (!received.empty() && !network_restart_pending) {
+            const auto &latest = received.back();
+            if (latest.restart_generation ==
+                observed_network_restart_generation) {
+              const auto local = std::find_if(
+                  latest.vehicles.begin(), latest.vehicles.end(),
+                  [&](const auto &v) {
+                    return v.peer == multiplayer_session->local_peer();
+                  });
+              if (local != latest.vehicles.end() && !pause_visible) {
+                const auto predicted = capture_network_vehicle(0U, vehicle);
+                const auto corrected = network_prediction.reconcile(
+                    *local, latest.host_time_ms, predicted);
+                apply_network_vehicle(vehicle, corrected);
+                network_previous_player_pose = vehicle.previous_pose();
+              }
+            }
+          }
+          if (!network_restart_pending) {
+            const auto host_now =
+                multiplayer_session->host_time_ms(SDL_GetTicks());
+            for (auto &opponent : opponents) {
+              if (const auto sample = network_snapshot_buffer.sample(
+                      network_peer_by_slot[opponent.slot_index], host_now)) {
+                apply_network_vehicle(*opponent.vehicle, *sample);
+              }
+            }
           }
         }
         if (multiplayer_session->is_host() && network_control_state_dirty) {
+          multiplayer_session->set_race_paused(network_pause_state);
           (void)multiplayer_session->publish_snapshot(make_network_snapshot());
           network_control_state_dirty = false;
         }
       }
-      if (outer_frame_active) {
+      if (outer_frame_active && !networked_race) {
         vehicle.begin_outer_frame();
         for (auto &opponent : opponents) {
           opponent.vehicle->begin_outer_frame();
@@ -11577,6 +11638,13 @@ int mh::app::run_motorhead_race(
                                               ? 0U
                                               : physics_schedule.slice_count);
            ++tick) {
+        if (networked_race) {
+          network_previous_player_pose = vehicle.state().pose;
+          vehicle.begin_outer_frame();
+          for (auto &opponent : opponents)
+            opponent.vehicle->begin_outer_frame();
+          outer_frame_active = true;
+        }
         const auto physics_seconds =
             ai_control_report_path.has_value()
                 ? static_cast<double>(ai_opening_time_step(ai_opening_cycle))
@@ -11616,6 +11684,10 @@ int mh::app::run_motorhead_race(
         if (networked_race) {
           mh::network::RaceInputFrame network_input;
           network_input.tick = network_simulation_tick++;
+          network_input.restart_generation =
+              multiplayer_session->is_host()
+                  ? network_restart_generation
+                  : observed_network_restart_generation;
           network_input.steering =
               static_cast<float>(staged_player_controls.steering);
           network_input.throttle =
@@ -11638,12 +11710,34 @@ int mh::app::run_motorhead_race(
         if (post_finish_schedule.active()) {
           tick_input.start_pressed = false;
         }
+        const auto network_elapsed =
+            networked_race
+                ? multiplayer_session->race_elapsed_ms(SDL_GetTicks())
+                : std::nullopt;
+        if (networked_race)
+          tick_input.start_pressed = false;
         if (automatic_countdown_pending &&
+            (!networked_race || network_elapsed.has_value()) &&
             session.race().progress().phase == mh::game::RacePhase::ready) {
           tick_input.start_pressed = true;
           automatic_countdown_pending = false;
         }
-        const auto command = session.step(tick_input, physics_duration);
+        auto race_duration = physics_duration;
+        if (networked_race) {
+          const auto remaining_ms =
+              static_cast<std::uint64_t>(physics_schedule.slice_count - tick -
+                                         1U) *
+              20U;
+          const auto target_ms = network_elapsed.value_or(0U);
+          const auto slice_ms =
+              target_ms > remaining_ms ? target_ms - remaining_ms : 0U;
+          race_duration =
+              std::chrono::milliseconds(slice_ms > network_race_elapsed_ms
+                                            ? slice_ms - network_race_elapsed_ms
+                                            : 0U);
+          network_race_elapsed_ms = std::max(network_race_elapsed_ms, slice_ms);
+        }
+        const auto command = session.step(tick_input, race_duration);
         post_finish_schedule.advance(physics_duration);
         countdown_sound_requested[0U] = countdown_sound_requested[0U] ||
                                         command.start_events.countdown_three;
@@ -11664,6 +11758,14 @@ int mh::app::run_motorhead_race(
           player_launch_traction.begin(vehicle.drive().state().engine_scalar,
                                        launch_tuning.minimum_rpm,
                                        launch_tuning.maximum_rpm);
+          if (networked_race && multiplayer_session->is_host()) {
+            for (auto &opponent : opponents) {
+              const auto &tuning = opponent.vehicle->drive().tuning();
+              network_launch_traction[network_peer_by_slot[opponent.slot_index]]
+                  .begin(opponent.vehicle->drive().state().engine_scalar,
+                         tuning.minimum_rpm, tuning.maximum_rpm);
+            }
+          }
           session.set_camera_mode(initial_camera);
           if (ghost_playback.has_value()) {
             // Retail MDEs retain roughly six seconds of stationary grid
@@ -11682,6 +11784,7 @@ int mh::app::run_motorhead_race(
         if (command.reset_vehicle) {
           if (networked_race && multiplayer_session->is_host()) {
             ++network_restart_generation;
+            multiplayer_session->reset_race_barrier(network_restart_generation);
             if (network_pause_state) {
               network_pause_state = false;
               ++network_pause_generation;
@@ -11700,6 +11803,18 @@ int mh::app::run_motorhead_race(
               mh::game::OriginalSplineRaceProgress(motion, race_laps);
           checkpoint_display_remaining = mh::game::SimulationDuration::zero();
           automatic_countdown_pending = true;
+          if (networked_race) {
+            network_race_elapsed_ms = 0U;
+            network_prediction.reset();
+            network_snapshot_buffer.reset();
+            network_controls.fill({});
+            for (auto &launch : network_launch_traction)
+              launch.reset();
+            multiplayer_session->mark_race_loaded(
+                multiplayer_session->is_host()
+                    ? network_restart_generation
+                    : observed_network_restart_generation);
+          }
           player_route_cursor.reset(player_initial_xz);
           post_finish_player_controller.reset(player_initial_xz);
           post_finish_player_controller.initialize_lateral_target(
@@ -11789,9 +11904,14 @@ int mh::app::run_motorhead_race(
             // first live control slice, but it must not free-rev every CPU
             // drivetrain throughout the locked start sequence. Hold the
             // opponent engines at idle until GO releases AI.
-            opponent.vehicle->advance_drive_state_only(
-                {}, simulated_physics_seconds);
-            opponent.presentation_controls = {};
+            auto controls = mh::game::ControlInput{};
+            if (networked_race && multiplayer_session->is_host()) {
+              const auto peer = network_peer_by_slot[opponent.slot_index];
+              controls = network_controls[peer];
+              network_controls[peer].shift_up = network_controls[peer].shift_down = false;
+            }
+            opponent.vehicle->advance_drive_state_only(controls, simulated_physics_seconds);
+            opponent.presentation_controls = controls;
           }
         } else if (session.race().progress().phase ==
                        mh::game::RacePhase::racing ||
@@ -12036,7 +12156,7 @@ int mh::app::run_motorhead_race(
                                          ? &post_finish_player_controller
                                          : nullptr)
                                   : opponents[self_slot - 1U].controller.get();
-              if (controller == nullptr) {
+              if (controller == nullptr || (networked_race && self_slot != 0U)) {
                 continue;
               }
               auto *opponent =
@@ -12190,7 +12310,17 @@ int mh::app::run_motorhead_race(
               const auto peer = network_peer_by_slot[opponent.slot_index];
               if (multiplayer_session->is_host() &&
                   peer < network_controls.size()) {
-                opponent_simulation_controls = network_controls[peer];
+                if (SDL_GetTicks() - network_input_received_ms[peer] > 500U)
+                  network_controls[peer] = {};
+                opponent_simulation_controls =
+                    network_launch_traction[peer]
+                        .step(
+                            network_controls[peer],
+                            opponent.vehicle->state().velocity.local_linear[2U],
+                            simulated_physics_seconds)
+                        .controls;
+                network_controls[peer].shift_up =
+                    network_controls[peer].shift_down = false;
               } else {
                 opponent_simulation_controls = {};
               }
@@ -12415,7 +12545,7 @@ int mh::app::run_motorhead_race(
               player_physics_frame, {false,
                                      false,
                                      false,
-                                     true,
+                                     !networked_race || multiplayer_session->is_host(),
                                      false,
                                      {},
                                      player_recovery_direction,
@@ -12457,11 +12587,14 @@ int mh::app::run_motorhead_race(
                     : std::nullopt;
             const auto recovery = opponent.vehicle->update_race_recovery(
                 opponent.physics_frame,
-                {true,
-                 opponent.controller->controller_state().stuck_recovery.active,
-                 outside_route, true, false,
+                {!networked_race,
+                 !networked_race && opponent.controller->controller_state().stuck_recovery.active,
+                 !networked_race && outside_route,
+                 !networked_race || multiplayer_session->is_host(), false,
                  vehicle.physics_pose().world_position, recovery_direction,
-                 simulated_physics_seconds, recovery_position});
+                 simulated_physics_seconds,
+                 networked_race ? std::nullopt : recovery_position,
+                 networked_race});
             if (recovery.reset_applied) {
               const auto recovered_pose = opponent.vehicle->ai_pose();
               const std::array<float, 2U> recovered_xz{
@@ -12510,18 +12643,40 @@ int mh::app::run_motorhead_race(
               }
             }
           }
-          if (networked_race && multiplayer_session->is_host() &&
-              (++network_snapshot_divider % 2U) == 0U) {
-            (void)multiplayer_session->publish_snapshot(
-                make_network_snapshot());
-            network_control_state_dirty = false;
-          }
-          if (post_finish_schedule.results_due()) {
+          if (post_finish_schedule.results_due() &&
+              (!networked_race || multiplayer_session->is_host())) {
             prepare_result_frame();
             break;
           }
         }
+        if (networked_race && outer_frame_active) {
+          vehicle.end_outer_frame();
+          for (auto &opponent : opponents)
+            opponent.vehicle->end_outer_frame();
+          outer_frame_active = false;
+        }
       }
+      if (networked_race && !multiplayer_session->is_host() &&
+          !network_restart_pending) {
+        const auto now = multiplayer_session->host_time_ms(SDL_GetTicks());
+        const auto remainder_ms =
+            static_cast<std::uint64_t>(network_physics_remainder * 1000.0);
+        network_prediction.record(now > remainder_ms ? now - remainder_ms : 0U,
+                                  capture_network_vehicle(0U, vehicle));
+      }
+      if (networked_race && multiplayer_session->is_host() &&
+          (network_control_state_dirty ||
+           SDL_GetTicks() - network_last_snapshot_ms >= 50U)) {
+        (void)multiplayer_session->publish_snapshot(make_network_snapshot());
+        const auto now_ms = SDL_GetTicks();
+        if (now_ms - network_last_snapshot_ms >= 50U)
+          network_last_snapshot_ms = now_ms - (now_ms - network_last_snapshot_ms) % 50U;
+        network_control_state_dirty = false;
+      }
+      // Flush newly produced input/state this frame, rather than waiting for
+      // the next render frame on the slower machine.
+      if (networked_race)
+        multiplayer_session->tick(SDL_GetTicks());
       if (outer_frame_active) {
         vehicle.end_outer_frame();
         for (auto &opponent : opponents) {
@@ -12717,12 +12872,32 @@ int mh::app::run_motorhead_race(
         continue;
       }
       const auto pose = mh::game::interpolate_vehicle_pose(
-          vehicle.previous_pose(), vehicle.state().pose, 1.0);
+          networked_race ? network_previous_player_pose
+                         : vehicle.previous_pose(),
+          vehicle.state().pose,
+          networked_race && !pause_visible ? network_physics_remainder / 0.02
+                                           : 1.0);
       if (!recorded_presentation) {
         for (auto &opponent : opponents) {
           opponent.presentation_pose = mh::game::interpolate_vehicle_pose(
-              opponent.vehicle->previous_pose(),
-              opponent.vehicle->state().pose, 1.0);
+              opponent.vehicle->previous_pose(), opponent.vehicle->state().pose,
+              networked_race && !pause_visible
+                  ? network_physics_remainder / 0.02
+                  : 1.0);
+          if (networked_race && !multiplayer_session->is_host()) {
+            const auto host_now =
+                multiplayer_session->host_time_ms(SDL_GetTicks());
+            if (const auto sample = network_snapshot_buffer.sample_for_presentation(
+                    network_peer_by_slot[opponent.slot_index], host_now,
+                    pose.world_position, player_contact_shape.bounding_radius,
+                    opponent.contact_shape.bounding_radius)) {
+              for (std::size_t axis = 0U; axis < 3U; ++axis)
+                opponent.presentation_pose.world_position[axis] =
+                    sample->position[axis];
+              opponent.presentation_pose.body_basis =
+                  quaternion_to_basis(sample->rotation);
+            }
+          }
         }
       }
       const auto elapsed_seconds =

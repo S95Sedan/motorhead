@@ -85,6 +85,14 @@ struct FrontEndFrame {
   std::vector<std::uint8_t> rgba;
 };
 
+// Lobby labels are baked into their background, so its text and backdrop
+// must share the complete 400-to-480 display transform. Other menus retain
+// their original unscaled sprite/overlay coordinates by default.
+void compose_front_end_display_frame(const FrontEndFrame &composed,
+                                    const mh::content::TgaImage &background,
+                                    FrontEndFrame &result,
+                                    bool scale_complete_frame = false);
+
 enum class OnePlayerMode : std::uint8_t {
   single_race,
   league_race,
